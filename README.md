@@ -21,6 +21,22 @@ Pipeline:
   - same-shape array ops (`+`, `-`, `*`, `/`)
   - strict scalar promotion (`array * 2.0`, `2.0 * array`)
 
+## Example
+
+```muninn
+fn checked_scale(scale: Float) -> Option[Float] {
+    if (scale == 0.0) { __none } else { __some(scale) }
+}
+
+fn normalize(raw: Float[3], scale: Float) -> Option[Float[3]] {
+    let s: Float = checked_scale(scale)?;
+    __some(raw / s)
+}
+
+let features: Option[Float[3]] = normalize([210.0, 140.0, 70.0], 255.0);
+print("features={features}");
+```
+
 ## Quick start
 
 ```bash
