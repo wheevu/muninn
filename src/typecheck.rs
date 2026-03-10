@@ -91,31 +91,63 @@ impl TypeChecker {
             type_context: TypeContext::default(),
         };
 
-        checker.define(
+        checker.define_builtin(
             "to_string".to_string(),
             Symbol {
                 ty: Ty::Function(vec![Ty::Unknown], Box::new(Ty::String)),
                 mutable: false,
             },
-            Span::default(),
         );
-        checker.define(
+        checker.define_builtin(
             "print".to_string(),
             Symbol {
                 ty: Ty::Function(vec![Ty::Unknown], Box::new(Ty::Void)),
                 mutable: false,
             },
-            Span::default(),
         );
-        checker.define(
+        checker.define_builtin(
+            "len".to_string(),
+            Symbol {
+                ty: Ty::Function(vec![Ty::Unknown], Box::new(Ty::Int)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
+            "sum".to_string(),
+            Symbol {
+                ty: Ty::Function(vec![Ty::Unknown], Box::new(Ty::Unknown)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
+            "dot".to_string(),
+            Symbol {
+                ty: Ty::Function(vec![Ty::Unknown, Ty::Unknown], Box::new(Ty::Unknown)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
+            "zeros".to_string(),
+            Symbol {
+                ty: Ty::Function(vec![Ty::Int], Box::new(Ty::Unknown)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
+            "ones".to_string(),
+            Symbol {
+                ty: Ty::Function(vec![Ty::Int], Box::new(Ty::Unknown)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
             "__none".to_string(),
             Symbol {
                 ty: Ty::Option(Box::new(Ty::Unknown)),
                 mutable: false,
             },
-            Span::default(),
         );
-        checker.define(
+        checker.define_builtin(
             "__some".to_string(),
             Symbol {
                 ty: Ty::Function(
@@ -124,17 +156,15 @@ impl TypeChecker {
                 ),
                 mutable: false,
             },
-            Span::default(),
         );
-        checker.define(
+        checker.define_builtin(
             "__is_none".to_string(),
             Symbol {
                 ty: Ty::Function(vec![Ty::Option(Box::new(Ty::Unknown))], Box::new(Ty::Bool)),
                 mutable: false,
             },
-            Span::default(),
         );
-        checker.define(
+        checker.define_builtin(
             "__unwrap".to_string(),
             Symbol {
                 ty: Ty::Function(
@@ -143,7 +173,6 @@ impl TypeChecker {
                 ),
                 mutable: false,
             },
-            Span::default(),
         );
 
         checker
@@ -479,6 +508,131 @@ impl TypeChecker {
 
                 if let Expr::Variable(name, _) = callee.as_ref() {
                     match name.as_str() {
+                        "len" => {
+                            if arg_types.len() != 1 {
+                                self.error(*span, "len expects 1 argument".to_string());
+                                Ty::Unknown
+                            } else {
+                                match &arg_types[0] {
+                                    Ty::Array(_, _) | Ty::Unknown => Ty::Int,
+                                    other => {
+                                        self.error(
+                                            *span,
+                                            format!("len expects an array, got {:?}", other),
+                                        );
+                                        Ty::Unknown
+                                    }
+                                }
+                            }
+                        }
+                        "sum" => {
+                            if arg_types.len() != 1 {
+                                self.error(*span, "sum expects 1 argument".to_string());
+                                Ty::Unknown
+                            } else {
+                                match &arg_types[0] {
+                                    Ty::Array(element, _) => {
+                                        if matches!(element.as_ref(), Ty::Int | Ty::Float) {
+                                            (*element.as_ref()).clone()
+                                        } else {
+                                            self.error(
+                                                *span,
+                                                format!(
+                                                    "sum expects Int[] or Float[], got {:?}",
+                                                    element
+                                                ),
+                                            );
+                                            Ty::Unknown
+                                        }
+                                    }
+                                    Ty::Unknown => Ty::Unknown,
+                                    other => {
+                                        self.error(
+                                            *span,
+                                            format!("sum expects an array, got {:?}", other),
+                                        );
+                                        Ty::Unknown
+                                    }
+                                }
+                            }
+                        }
+                        "dot" => {
+                            if arg_types.len() != 2 {
+                                self.error(*span, "dot expects 2 arguments".to_string());
+                                Ty::Unknown
+                            } else {
+                                match (&arg_types[0], &arg_types[1]) {
+                                    (
+                                        Ty::Array(left_elem, left_len),
+                                        Ty::Array(right_elem, right_len),
+                                    ) => {
+                                        if left_len != right_len {
+                                            self.error(
+                                                *span,
+                                                format!(
+                                                    "dot expects same-length arrays, got {} and {}",
+                                                    left_len, right_len
+                                                ),
+                                            );
+                                            Ty::Unknown
+                                        } else if !self.ty_compatible(left_elem, right_elem) {
+                                            self.error(
+                                                *span,
+                                                format!(
+                                                    "dot expects same element type arrays, got {:?} and {:?}",
+                                                    left_elem, right_elem
+                                                ),
+                                            );
+                                            Ty::Unknown
+                                        } else if matches!(left_elem.as_ref(), Ty::Int | Ty::Float)
+                                        {
+                                            (*left_elem.as_ref()).clone()
+                                        } else {
+                                            self.error(
+                                                *span,
+                                                format!(
+                                                    "dot expects Int[] or Float[] arrays, got {:?}",
+                                                    left_elem
+                                                ),
+                                            );
+                                            Ty::Unknown
+                                        }
+                                    }
+                                    _ => {
+                                        self.error(*span, "dot expects two arrays".to_string());
+                                        Ty::Unknown
+                                    }
+                                }
+                            }
+                        }
+                        "zeros" | "ones" => {
+                            if arg_types.len() != 1 {
+                                self.error(*span, format!("{} expects 1 argument", name));
+                                Ty::Unknown
+                            } else if arg_types[0] != Ty::Int && arg_types[0] != Ty::Unknown {
+                                self.error(
+                                    *span,
+                                    format!("{} expects an Int length argument", name),
+                                );
+                                Ty::Unknown
+                            } else {
+                                match &args[0] {
+                                    Expr::Int(len, _) if *len >= 0 => {
+                                        Ty::Array(Box::new(Ty::Float), *len as usize)
+                                    }
+                                    _ => {
+                                        self.error(
+                                            *span,
+                                            format!(
+                                                "{} currently requires a compile-time non-negative Int literal length",
+                                                name
+                                            ),
+                                        );
+                                        Ty::Unknown
+                                    }
+                                }
+                            }
+                        }
                         "__is_none" => {
                             if arg_types.len() != 1 {
                                 self.error(*span, "__is_none expects 1 argument".to_string());
@@ -1012,6 +1166,17 @@ impl TypeChecker {
     }
 
     fn define(&mut self, name: String, symbol: Symbol, span: Span) {
+        if is_reserved_intrinsic(&name) {
+            self.error(
+                span,
+                format!(
+                    "'{}' is reserved for compiler/runtime intrinsics and cannot be redefined",
+                    name
+                ),
+            );
+            return;
+        }
+
         let exists = self
             .scopes
             .last()
@@ -1022,6 +1187,12 @@ impl TypeChecker {
         }
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name, symbol);
+        }
+    }
+
+    fn define_builtin(&mut self, name: String, symbol: Symbol) {
+        if let Some(global) = self.scopes.first_mut() {
+            global.insert(name, symbol);
         }
     }
 
@@ -1087,4 +1258,8 @@ impl TypeChecker {
         self.errors
             .push(MuninnError::new("typecheck", message, span));
     }
+}
+
+fn is_reserved_intrinsic(name: &str) -> bool {
+    matches!(name, "__none" | "__some" | "__is_none" | "__unwrap")
 }

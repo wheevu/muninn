@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::ast::{
     AssignTarget, BinaryOp, BlockExpr, Expr, FunctionDecl, Program, Stmt, UnaryOp, VecBinaryMode,
@@ -49,7 +50,7 @@ impl ModuleCompiler {
     }
 
     fn push_function(&mut self, function: FunctionBytecode) -> usize {
-        self.module.functions.push(function);
+        self.module.functions.push(Rc::new(function));
         self.module.functions.len() - 1
     }
 
@@ -102,12 +103,12 @@ impl ModuleCompiler {
                 }
 
                 let class_id = self.module.classes.len();
-                self.module.classes.push(ClassBytecode {
+                self.module.classes.push(Rc::new(ClassBytecode {
                     name: class.name.clone(),
                     fields: class.fields.iter().map(|f| f.name.clone()).collect(),
                     methods: method_map,
                     init,
-                });
+                }));
 
                 let class_const = compiler.make_constant(Constant::Class(class_id));
                 compiler.emit_op(OpCode::Constant);
@@ -248,6 +249,18 @@ impl ModuleCompiler {
                 }
             }
             Expr::ArrayLiteral(items, _) => {
+                if items.len() > u16::MAX as usize {
+                    self.errors.push(MuninnError::new(
+                        "compiler",
+                        format!(
+                            "array literal has {} items, exceeding {}",
+                            items.len(),
+                            u16::MAX
+                        ),
+                        expr.span(),
+                    ));
+                    return;
+                }
                 for item in items {
                     self.compile_expr(compiler, item);
                 }
@@ -394,6 +407,19 @@ impl ModuleCompiler {
             self.errors.push(MuninnError::new(
                 "compiler",
                 "vectorized op only supports +, -, *, /",
+                span,
+            ));
+            return;
+        }
+
+        if len > u16::MAX as usize {
+            self.errors.push(MuninnError::new(
+                "compiler",
+                format!(
+                    "vectorized operation length {} exceeds maximum {}",
+                    len,
+                    u16::MAX
+                ),
                 span,
             ));
             return;
@@ -605,6 +631,10 @@ impl FunctionCompiler {
 
     fn declare_local(&mut self, name: String, _span: Span) -> usize {
         let slot = self.next_local;
+        assert!(
+            slot <= u16::MAX as usize,
+            "local variable slots exceed u16 operand capacity"
+        );
         self.next_local += 1;
         self.max_local = self.max_local.max(self.next_local);
         self.scopes.last_mut().expect("scope").insert(name, slot);
@@ -648,6 +678,10 @@ impl FunctionCompiler {
 
     fn patch_jump(&mut self, jump_operand_offset: usize) {
         let jump = self.chunk.code.len() - jump_operand_offset - 2;
+        assert!(
+            jump <= u16::MAX as usize,
+            "jump offset exceeds u16 operand capacity"
+        );
         let bytes = (jump as u16).to_le_bytes();
         self.chunk.code[jump_operand_offset] = bytes[0];
         self.chunk.code[jump_operand_offset + 1] = bytes[1];
@@ -656,6 +690,10 @@ impl FunctionCompiler {
     fn emit_loop(&mut self, loop_start: usize) {
         self.emit_op(OpCode::Loop);
         let offset = self.chunk.code.len() - loop_start + 2;
+        assert!(
+            offset <= u16::MAX as usize,
+            "loop offset exceeds u16 operand capacity"
+        );
         self.emit_u16(offset as u16);
     }
 }

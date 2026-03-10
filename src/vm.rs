@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::rc::Rc;
@@ -125,6 +126,16 @@ impl Vm {
         self.globals
             .insert("print".to_string(), Value::Native(native_print));
         self.globals
+            .insert("len".to_string(), Value::Native(native_len));
+        self.globals
+            .insert("sum".to_string(), Value::Native(native_sum));
+        self.globals
+            .insert("dot".to_string(), Value::Native(native_dot));
+        self.globals
+            .insert("zeros".to_string(), Value::Native(native_zeros));
+        self.globals
+            .insert("ones".to_string(), Value::Native(native_ones));
+        self.globals
             .insert("__some".to_string(), Value::Native(native_some));
         self.globals
             .insert("__is_none".to_string(), Value::Native(native_is_none));
@@ -155,7 +166,7 @@ impl Vm {
             locals[idx] = value;
         }
 
-        let chunk = function.chunk;
+        let chunk = &function.chunk;
         let mut stack = Vec::<Value>::new();
         let mut ip = 0usize;
 
@@ -265,12 +276,12 @@ impl Vm {
                 OpCode::Greater => {
                     let right = pop_stack(&mut stack, "Greater")?;
                     let left = pop_stack(&mut stack, "Greater")?;
-                    stack.push(compare_values(left, right, |a, b| a > b)?);
+                    stack.push(compare_values(left, right, Ordering::Greater)?);
                 }
                 OpCode::Less => {
                     let right = pop_stack(&mut stack, "Less")?;
                     let left = pop_stack(&mut stack, "Less")?;
-                    stack.push(compare_values(left, right, |a, b| a < b)?);
+                    stack.push(compare_values(left, right, Ordering::Less)?);
                 }
                 OpCode::JumpIfFalse => {
                     let offset = read_u16(&chunk.code, &mut ip) as usize;
@@ -553,14 +564,18 @@ fn numeric_binary(
     }
 }
 
-fn compare_values(left: Value, right: Value, op: fn(f64, f64) -> bool) -> VmResult<Value> {
+fn compare_values(left: Value, right: Value, expected: Ordering) -> VmResult<Value> {
     match (left, right) {
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(op(a as f64, b as f64))),
-        (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(op(a, b))),
-        (Value::String(a), Value::String(b)) => Ok(Value::Bool(op(
-            a.as_bytes().cmp(b.as_bytes()) as i32 as f64,
-            0.0,
-        ))),
+        (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a.cmp(&b) == expected)),
+        (Value::Float(a), Value::Float(b)) => {
+            let ordering = a
+                .partial_cmp(&b)
+                .ok_or_else(|| "cannot compare NaN values".to_string())?;
+            Ok(Value::Bool(ordering == expected))
+        }
+        (Value::String(a), Value::String(b)) => {
+            Ok(Value::Bool(a.as_str().cmp(b.as_str()) == expected))
+        }
         _ => Err("comparison operands must be matching numeric or string".to_string()),
     }
 }
@@ -585,6 +600,129 @@ fn native_some(args: &[Value]) -> VmResult<Value> {
         return Err("__some expects 1 argument".to_string());
     }
     Ok(Value::Some(Box::new(args[0].clone())))
+}
+
+fn native_len(args: &[Value]) -> VmResult<Value> {
+    if args.len() != 1 {
+        return Err("len expects 1 argument".to_string());
+    }
+
+    match &args[0] {
+        Value::Array(items) => Ok(Value::Int(items.borrow().len() as i64)),
+        Value::String(text) => Ok(Value::Int(text.len() as i64)),
+        _ => Err("len expects an array or string".to_string()),
+    }
+}
+
+fn native_sum(args: &[Value]) -> VmResult<Value> {
+    if args.len() != 1 {
+        return Err("sum expects 1 argument".to_string());
+    }
+
+    let Value::Array(items) = &args[0] else {
+        return Err("sum expects an array".to_string());
+    };
+
+    let values = items.borrow();
+    if values.is_empty() {
+        return Err("sum expects a non-empty array".to_string());
+    }
+
+    match &values[0] {
+        Value::Int(_) => {
+            let mut total = 0i64;
+            for value in values.iter() {
+                let Value::Int(int_value) = value else {
+                    return Err("sum requires homogeneous numeric arrays".to_string());
+                };
+                total += int_value;
+            }
+            Ok(Value::Int(total))
+        }
+        Value::Float(_) => {
+            let mut total = 0.0f64;
+            for value in values.iter() {
+                let Value::Float(float_value) = value else {
+                    return Err("sum requires homogeneous numeric arrays".to_string());
+                };
+                total += float_value;
+            }
+            Ok(Value::Float(total))
+        }
+        _ => Err("sum expects Int[] or Float[]".to_string()),
+    }
+}
+
+fn native_dot(args: &[Value]) -> VmResult<Value> {
+    if args.len() != 2 {
+        return Err("dot expects 2 arguments".to_string());
+    }
+
+    let Value::Array(left) = &args[0] else {
+        return Err("dot expects arrays".to_string());
+    };
+    let Value::Array(right) = &args[1] else {
+        return Err("dot expects arrays".to_string());
+    };
+
+    let left_values = left.borrow();
+    let right_values = right.borrow();
+    if left_values.len() != right_values.len() {
+        return Err("dot expects same-length arrays".to_string());
+    }
+
+    if left_values.is_empty() {
+        return Err("dot expects non-empty arrays".to_string());
+    }
+
+    match (&left_values[0], &right_values[0]) {
+        (Value::Int(_), Value::Int(_)) => {
+            let mut total = 0i64;
+            for (left_value, right_value) in left_values.iter().zip(right_values.iter()) {
+                let (Value::Int(l), Value::Int(r)) = (left_value, right_value) else {
+                    return Err("dot requires matching homogeneous numeric arrays".to_string());
+                };
+                total += l * r;
+            }
+            Ok(Value::Int(total))
+        }
+        (Value::Float(_), Value::Float(_)) => {
+            let mut total = 0.0f64;
+            for (left_value, right_value) in left_values.iter().zip(right_values.iter()) {
+                let (Value::Float(l), Value::Float(r)) = (left_value, right_value) else {
+                    return Err("dot requires matching homogeneous numeric arrays".to_string());
+                };
+                total += l * r;
+            }
+            Ok(Value::Float(total))
+        }
+        _ => Err("dot expects matching Int[] or Float[]".to_string()),
+    }
+}
+
+fn native_zeros(args: &[Value]) -> VmResult<Value> {
+    make_filled_float_array(args, 0.0, "zeros")
+}
+
+fn native_ones(args: &[Value]) -> VmResult<Value> {
+    make_filled_float_array(args, 1.0, "ones")
+}
+
+fn make_filled_float_array(args: &[Value], fill: f64, name: &str) -> VmResult<Value> {
+    if args.len() != 1 {
+        return Err(format!("{} expects 1 argument", name));
+    }
+
+    let Value::Int(len) = args[0] else {
+        return Err(format!("{} expects an Int length", name));
+    };
+
+    if len < 0 {
+        return Err(format!("{} length must be non-negative", name));
+    }
+
+    let items = vec![Value::Float(fill); len as usize];
+    Ok(Value::Array(Rc::new(RefCell::new(items))))
 }
 
 fn native_is_none(args: &[Value]) -> VmResult<Value> {

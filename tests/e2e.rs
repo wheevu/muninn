@@ -99,3 +99,60 @@ print("out={out}");
 
     assert!(compile_and_run(src).is_ok());
 }
+
+#[test]
+fn rejects_intrinsic_shadowing() {
+    let src = r#"
+let __none: Int = 1;
+"#;
+
+    assert!(compile_and_run(src).is_err());
+}
+
+#[test]
+fn supports_string_relational_comparisons() {
+    let src = r#"
+if ("alpha" < "beta") { 1 } else { __unwrap(__none) };
+if ("beta" > "alpha") { 1 } else { __unwrap(__none) };
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}
+
+#[test]
+fn supports_ml_array_builtins() {
+    let src = r#"
+let a: Float[3] = [1.0, 2.0, 3.0];
+let b: Float[3] = ones(3);
+let c: Float[3] = a + b;
+let d: Float = sum(c);
+let e: Float = dot(c, [2.0, 2.0, 2.0]);
+let n: Int = len(c);
+print("d={d}, e={e}, n={n}");
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}
+
+#[test]
+fn supports_grid_property_indexing() {
+    let src = r#"
+class GridHolder {
+    let grid: Int[2, 2];
+
+    fn init() {
+        self.grid = [0, 0, 0, 0];
+    }
+
+    fn poke() {
+        self.grid[1, 1] = 7;
+        print(self.grid[1, 1]);
+    }
+}
+
+let holder: GridHolder = GridHolder();
+holder.poke();
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}

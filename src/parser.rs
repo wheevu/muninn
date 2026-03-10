@@ -516,6 +516,14 @@ impl Parser {
     }
 
     fn parse_primary(&mut self) -> Result<Expr, MuninnError> {
+        if self.is_at_end() {
+            return Err(MuninnError::new(
+                "parser",
+                "expected expression",
+                self.peek().span,
+            ));
+        }
+
         let token = self.advance().clone();
         match token.kind {
             TokenKind::False => Ok(Expr::Bool(false, token.span)),
@@ -777,6 +785,14 @@ impl Parser {
                     expr_source.push(next);
                 }
 
+                if expr_source.trim().is_empty() {
+                    return Err(MuninnError::new(
+                        "parser",
+                        "empty interpolation expression",
+                        span,
+                    ));
+                }
+
                 let lexer = Lexer::new(expr_source.trim());
                 let tokens = lexer.lex().map_err(|mut errs| {
                     errs.pop().unwrap_or_else(|| {
@@ -884,7 +900,11 @@ impl Parser {
     }
 
     fn previous(&self) -> &Token {
-        &self.tokens[self.current - 1]
+        if self.current == 0 {
+            &self.tokens[0]
+        } else {
+            &self.tokens[self.current - 1]
+        }
     }
 }
 
@@ -928,5 +948,13 @@ fn run(v: Float) -> Option[Float] {
         let mut parser = Parser::new(tokens);
         let program = parser.parse_program().expect("program");
         assert_eq!(program.statements.len(), 2);
+    }
+
+    #[test]
+    fn rejects_empty_interpolation_expression() {
+        let src = "let x: String = \"{}\";";
+        let tokens = Lexer::new(src).lex().expect("tokens");
+        let mut parser = Parser::new(tokens);
+        assert!(parser.parse_program().is_err());
     }
 }

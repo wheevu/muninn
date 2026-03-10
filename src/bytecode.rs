@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Debug, Clone)]
 pub struct BytecodeModule {
-    pub functions: Vec<FunctionBytecode>,
-    pub classes: Vec<ClassBytecode>,
+    pub functions: Vec<Rc<FunctionBytecode>>,
+    pub classes: Vec<Rc<ClassBytecode>>,
     pub entry_function: usize,
 }
 
@@ -60,6 +61,9 @@ impl Chunk {
     }
 
     pub fn add_constant(&mut self, constant: Constant) -> u16 {
+        if self.constants.len() >= u16::MAX as usize {
+            panic!("constant pool overflow: maximum of {} entries", u16::MAX);
+        }
         self.constants.push(constant);
         (self.constants.len() - 1) as u16
     }

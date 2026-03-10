@@ -81,6 +81,12 @@ impl Desugarer {
             Stmt::Class(mut class) => {
                 self.enter_scope();
                 for field in &mut class.fields {
+                    if let TypeExpr::Grid { width, .. } = &field.ty {
+                        self.grid_scopes
+                            .last_mut()
+                            .expect("scope")
+                            .insert(field.name.clone(), *width);
+                    }
                     field.ty = self.desugar_type(field.ty.clone());
                 }
                 for method in &mut class.methods {
@@ -604,14 +610,29 @@ impl Desugarer {
     }
 
     fn lookup_grid_width(&self, target: &Expr) -> Option<usize> {
-        if let Expr::Variable(name, _) = target {
-            for scope in self.grid_scopes.iter().rev() {
-                if let Some(width) = scope.get(name) {
-                    return Some(*width);
+        match target {
+            Expr::Variable(name, _) => {
+                for scope in self.grid_scopes.iter().rev() {
+                    if let Some(width) = scope.get(name) {
+                        return Some(*width);
+                    }
                 }
+                None
             }
+            Expr::Property { object, name, .. } => {
+                if matches!(object.as_ref(), Expr::SelfRef(_))
+                    || matches!(object.as_ref(), Expr::Variable(self_name, _) if self_name == "self")
+                {
+                    for scope in self.grid_scopes.iter().rev() {
+                        if let Some(width) = scope.get(name) {
+                            return Some(*width);
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
         }
-        None
     }
 
     fn enter_scope(&mut self) {
