@@ -15,6 +15,10 @@ pub fn desugar_program(program: Program) -> Result<Program, MuninnError> {
 struct Desugarer {
     temp_counter: usize,
     grid_scopes: Vec<HashMap<String, usize>>,
+    value_scopes: Vec<HashMap<String, TypeExpr>>,
+    class_field_types: HashMap<String, HashMap<String, TypeExpr>>,
+    class_grid_widths: HashMap<String, HashMap<String, usize>>,
+    current_class: Vec<String>,
     function_returns: Vec<TypeExpr>,
 }
 
@@ -23,6 +27,10 @@ impl Desugarer {
         Self {
             temp_counter: 0,
             grid_scopes: vec![HashMap::new()],
+            value_scopes: vec![HashMap::new()],
+            class_field_types: HashMap::new(),
+            class_grid_widths: HashMap::new(),
+            current_class: Vec::new(),
             function_returns: Vec::new(),
         }
     }
@@ -44,14 +52,23 @@ impl Desugarer {
                 initializer,
                 span,
             } => {
-                let lowered_ty = self.desugar_type(ty.clone());
-                if let TypeExpr::Grid { width, .. } = ty {
+                let lowered_ty = ty.clone().map(|declared| self.desugar_type(declared));
+                if let Some(TypeExpr::Grid { width, .. }) = ty {
                     self.grid_scopes
                         .last_mut()
                         .expect("scope")
                         .insert(name.clone(), width);
                 }
                 let initializer = self.desugar_expr(initializer)?;
+                let inferred_ty = lowered_ty
+                    .clone()
+                    .or_else(|| self.infer_type_from_expr(&initializer));
+                if let Some(value_ty) = inferred_ty {
+                    self.value_scopes
+                        .last_mut()
+                        .expect("scope")
+                        .insert(name.clone(), value_ty);
+                }
                 Ok(Stmt::Let {
                     name,
                     mutable,
@@ -70,6 +87,10 @@ impl Desugarer {
                             .insert(name.clone(), *width);
                     }
                     *ty = self.desugar_type(ty.clone());
+                    self.value_scopes
+                        .last_mut()
+                        .expect("scope")
+                        .insert(name.clone(), ty.clone());
                 }
                 function.return_type = self.desugar_type(function.return_type);
                 self.function_returns.push(function.return_type.clone());
@@ -79,6 +100,20 @@ impl Desugarer {
                 Ok(Stmt::Function(function))
             }
             Stmt::Class(mut class) => {
+                let mut class_fields = HashMap::new();
+                let mut class_grids = HashMap::new();
+                for field in &class.fields {
+                    if let TypeExpr::Grid { width, .. } = &field.ty {
+                        class_grids.insert(field.name.clone(), *width);
+                    }
+                    class_fields.insert(field.name.clone(), self.desugar_type(field.ty.clone()));
+                }
+                self.class_field_types
+                    .insert(class.name.clone(), class_fields);
+                self.class_grid_widths
+                    .insert(class.name.clone(), class_grids);
+                self.current_class.push(class.name.clone());
+
                 self.enter_scope();
                 for field in &mut class.fields {
                     if let TypeExpr::Grid { width, .. } = &field.ty {
@@ -91,14 +126,22 @@ impl Desugarer {
                 }
                 for method in &mut class.methods {
                     self.enter_scope();
+                    self.value_scopes
+                        .last_mut()
+                        .expect("scope")
+                        .insert("self".to_string(), TypeExpr::Named(class.name.clone()));
                     for param in &mut method.params {
-                        if let TypeExpr::Grid { width, .. } = param.ty {
+                        if let TypeExpr::Grid { width, .. } = &param.ty {
                             self.grid_scopes
                                 .last_mut()
                                 .expect("scope")
-                                .insert(param.name.clone(), width);
+                                .insert(param.name.clone(), *width);
                         }
                         param.ty = self.desugar_type(param.ty.clone());
+                        self.value_scopes
+                            .last_mut()
+                            .expect("scope")
+                            .insert(param.name.clone(), param.ty.clone());
                     }
                     method.return_type = self.desugar_type(method.return_type.clone());
                     self.function_returns.push(method.return_type.clone());
@@ -108,14 +151,22 @@ impl Desugarer {
                 }
                 if let Some(init) = &mut class.init {
                     self.enter_scope();
+                    self.value_scopes
+                        .last_mut()
+                        .expect("scope")
+                        .insert("self".to_string(), TypeExpr::Named(class.name.clone()));
                     for param in &mut init.params {
-                        if let TypeExpr::Grid { width, .. } = param.ty {
+                        if let TypeExpr::Grid { width, .. } = &param.ty {
                             self.grid_scopes
                                 .last_mut()
                                 .expect("scope")
-                                .insert(param.name.clone(), width);
+                                .insert(param.name.clone(), *width);
                         }
                         param.ty = self.desugar_type(param.ty.clone());
+                        self.value_scopes
+                            .last_mut()
+                            .expect("scope")
+                            .insert(param.name.clone(), param.ty.clone());
                     }
                     init.return_type = self.desugar_type(init.return_type.clone());
                     self.function_returns.push(init.return_type.clone());
@@ -124,6 +175,7 @@ impl Desugarer {
                     self.exit_scope();
                 }
                 self.exit_scope();
+                self.current_class.pop();
                 Ok(Stmt::Class(class))
             }
             Stmt::Return { value, span } => {
@@ -200,21 +252,21 @@ impl Desugarer {
                 Stmt::Let {
                     name: start_name.clone(),
                     mutable: false,
-                    ty: TypeExpr::Int,
+                    ty: Some(TypeExpr::Int),
                     initializer: start_expr,
                     span,
                 },
                 Stmt::Let {
                     name: end_name,
                     mutable: false,
-                    ty: TypeExpr::Int,
+                    ty: Some(TypeExpr::Int),
                     initializer: end_expr,
                     span,
                 },
                 Stmt::Let {
                     name: var_name,
                     mutable: true,
-                    ty: TypeExpr::Int,
+                    ty: Some(TypeExpr::Int),
                     initializer: Expr::Variable(start_name, span),
                     span,
                 },
@@ -494,7 +546,7 @@ impl Desugarer {
         let lowered_expr = self.desugar_expr(expr)?;
 
         let is_none = Expr::Call {
-            callee: Box::new(Expr::Variable("__is_none".to_string(), span)),
+            callee: Box::new(Expr::Variable("is_none".to_string(), span)),
             args: vec![temp_var.clone()],
             span,
         };
@@ -503,7 +555,7 @@ impl Desugarer {
             condition: Box::new(is_none),
             then_branch: BlockExpr {
                 statements: vec![Stmt::Return {
-                    value: Some(Expr::Variable("__none".to_string(), span)),
+                    value: Some(Expr::Variable("none".to_string(), span)),
                     span,
                 }],
                 tail: None,
@@ -518,7 +570,7 @@ impl Desugarer {
         };
 
         let unwrapped = Expr::Call {
-            callee: Box::new(Expr::Variable("__unwrap".to_string(), span)),
+            callee: Box::new(Expr::Variable("unwrap".to_string(), span)),
             args: vec![temp_var],
             span,
         };
@@ -528,7 +580,7 @@ impl Desugarer {
                 Stmt::Let {
                     name: temp_name,
                     mutable: false,
-                    ty: TypeExpr::Option(inner_ty),
+                    ty: Some(TypeExpr::Option(inner_ty)),
                     initializer: lowered_expr,
                     span,
                 },
@@ -629,7 +681,83 @@ impl Desugarer {
                         }
                     }
                 }
+
+                let owner_class = self.resolve_expr_class(object)?;
+                self.class_grid_widths
+                    .get(&owner_class)
+                    .and_then(|fields| fields.get(name))
+                    .copied()
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve_expr_class(&self, expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::SelfRef(_) => self
+                .current_class
+                .last()
+                .cloned()
+                .or_else(|| self.resolve_variable_class("self")),
+            Expr::Variable(name, _) => self.resolve_variable_class(name),
+            Expr::Property { object, name, .. } => {
+                let owner_class = self.resolve_expr_class(object)?;
+                let fields = self.class_field_types.get(&owner_class)?;
+                match fields.get(name) {
+                    Some(TypeExpr::Named(class_name)) => Some(class_name.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve_variable_class(&self, name: &str) -> Option<String> {
+        match self.lookup_value_type(name) {
+            Some(TypeExpr::Named(class_name)) => Some(class_name.clone()),
+            _ => None,
+        }
+    }
+
+    fn lookup_value_type(&self, name: &str) -> Option<&TypeExpr> {
+        for scope in self.value_scopes.iter().rev() {
+            if let Some(ty) = scope.get(name) {
+                return Some(ty);
+            }
+        }
+        None
+    }
+
+    fn infer_type_from_expr(&self, expr: &Expr) -> Option<TypeExpr> {
+        match expr {
+            Expr::Int(..) => Some(TypeExpr::Int),
+            Expr::Float(..) => Some(TypeExpr::Float),
+            Expr::Bool(..) => Some(TypeExpr::Bool),
+            Expr::String(..) => Some(TypeExpr::String),
+            Expr::Variable(name, _) => self.lookup_value_type(name).cloned(),
+            Expr::Call { callee, .. } => {
+                if let Expr::Variable(name, _) = callee.as_ref() {
+                    if self.class_field_types.contains_key(name) {
+                        return Some(TypeExpr::Named(name.clone()));
+                    }
+                }
                 None
+            }
+            Expr::ArrayLiteral(items, _) => {
+                let first = items.first()?;
+                let element = self.infer_type_from_expr(first)?;
+                if items
+                    .iter()
+                    .skip(1)
+                    .all(|item| self.infer_type_from_expr(item).as_ref() == Some(&element))
+                {
+                    Some(TypeExpr::Array {
+                        element: Box::new(element),
+                        len: items.len(),
+                    })
+                } else {
+                    None
+                }
             }
             _ => None,
         }
@@ -637,10 +765,12 @@ impl Desugarer {
 
     fn enter_scope(&mut self) {
         self.grid_scopes.push(HashMap::new());
+        self.value_scopes.push(HashMap::new());
     }
 
     fn exit_scope(&mut self) {
         self.grid_scopes.pop();
+        self.value_scopes.pop();
     }
 
     fn next_temp_id(&mut self) -> usize {
@@ -733,12 +863,10 @@ mod tests {
             panic!("for loop should lower into block expression")
         };
 
-        assert!(
-            block
-                .statements
-                .iter()
-                .any(|stmt| matches!(stmt, Stmt::While { .. }))
-        );
+        assert!(block
+            .statements
+            .iter()
+            .any(|stmt| matches!(stmt, Stmt::While { .. })));
     }
 
     #[test]

@@ -302,7 +302,14 @@ impl<'a> Lexer<'a> {
     }
 
     fn span(&self) -> Span {
-        Span::new(self.start_line, self.start_column, self.start)
+        Span::range(
+            self.start_line,
+            self.start_column,
+            self.start,
+            self.line,
+            self.column,
+            self.current,
+        )
     }
 }
 
@@ -326,11 +333,9 @@ mod tests {
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::For)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::In)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::DotDot)));
-        assert!(
-            tokens
-                .iter()
-                .any(|t| matches!(t.kind, TokenKind::PipeGreater))
-        );
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t.kind, TokenKind::PipeGreater)));
     }
 
     #[test]
@@ -347,10 +352,8 @@ mod tests {
     fn lexes_question_operator() {
         let source = "maybe()?;";
         let tokens = Lexer::new(source).lex().expect("tokens");
-        assert!(
-            tokens
-                .iter()
-                .any(|token| matches!(token.kind, TokenKind::Question))
-        );
+        assert!(tokens
+            .iter()
+            .any(|token| matches!(token.kind, TokenKind::Question)));
     }
 }

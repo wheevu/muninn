@@ -141,6 +141,40 @@ impl TypeChecker {
             },
         );
         checker.define_builtin(
+            "none".to_string(),
+            Symbol {
+                ty: Ty::Option(Box::new(Ty::Unknown)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
+            "some".to_string(),
+            Symbol {
+                ty: Ty::Function(
+                    vec![Ty::Unknown],
+                    Box::new(Ty::Option(Box::new(Ty::Unknown))),
+                ),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
+            "is_none".to_string(),
+            Symbol {
+                ty: Ty::Function(vec![Ty::Option(Box::new(Ty::Unknown))], Box::new(Ty::Bool)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
+            "unwrap".to_string(),
+            Symbol {
+                ty: Ty::Function(
+                    vec![Ty::Option(Box::new(Ty::Unknown))],
+                    Box::new(Ty::Unknown),
+                ),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
             "__none".to_string(),
             Symbol {
                 ty: Ty::Option(Box::new(Ty::Unknown)),
@@ -269,21 +303,35 @@ impl TypeChecker {
                 initializer,
                 span,
             } => {
-                let expected = self.resolve_type(ty, *span);
                 let actual = self.check_expr(initializer);
-                if !self.ty_compatible(&expected, &actual) {
+                let declared_ty = if let Some(ty) = ty {
+                    let expected = self.resolve_type(ty, *span);
+                    if !self.ty_compatible(&expected, &actual) {
+                        self.error(
+                            *span,
+                            format!(
+                                "type mismatch in declaration '{}': expected {:?}, got {:?}",
+                                name, expected, actual
+                            ),
+                        );
+                    }
+                    expected
+                } else if actual == Ty::Unknown {
                     self.error(
                         *span,
                         format!(
-                            "type mismatch in declaration '{}': expected {:?}, got {:?}",
-                            name, expected, actual
+                            "cannot infer type for '{}' from initializer; add an explicit annotation",
+                            name
                         ),
                     );
-                }
+                    Ty::Unknown
+                } else {
+                    actual.clone()
+                };
                 self.define(
                     name.clone(),
                     Symbol {
-                        ty: expected,
+                        ty: declared_ty,
                         mutable: *mutable,
                     },
                     *span,
@@ -514,11 +562,14 @@ impl TypeChecker {
                                 Ty::Unknown
                             } else {
                                 match &arg_types[0] {
-                                    Ty::Array(_, _) | Ty::Unknown => Ty::Int,
+                                    Ty::Array(_, _) | Ty::String | Ty::Unknown => Ty::Int,
                                     other => {
                                         self.error(
                                             *span,
-                                            format!("len expects an array, got {:?}", other),
+                                            format!(
+                                                "len expects an array or string, got {:?}",
+                                                other
+                                            ),
                                         );
                                         Ty::Unknown
                                     }
@@ -633,9 +684,9 @@ impl TypeChecker {
                                 }
                             }
                         }
-                        "__is_none" => {
+                        "is_none" | "__is_none" => {
                             if arg_types.len() != 1 {
-                                self.error(*span, "__is_none expects 1 argument".to_string());
+                                self.error(*span, "is_none expects 1 argument".to_string());
                                 Ty::Unknown
                             } else {
                                 match &arg_types[0] {
@@ -643,16 +694,16 @@ impl TypeChecker {
                                     other => {
                                         self.error(
                                             *span,
-                                            format!("__is_none expects Option[T], got {:?}", other),
+                                            format!("is_none expects Option[T], got {:?}", other),
                                         );
                                         Ty::Unknown
                                     }
                                 }
                             }
                         }
-                        "__unwrap" => {
+                        "unwrap" | "__unwrap" => {
                             if arg_types.len() != 1 {
-                                self.error(*span, "__unwrap expects 1 argument".to_string());
+                                self.error(*span, "unwrap expects 1 argument".to_string());
                                 Ty::Unknown
                             } else {
                                 match &arg_types[0] {
@@ -661,16 +712,16 @@ impl TypeChecker {
                                     other => {
                                         self.error(
                                             *span,
-                                            format!("__unwrap expects Option[T], got {:?}", other),
+                                            format!("unwrap expects Option[T], got {:?}", other),
                                         );
                                         Ty::Unknown
                                     }
                                 }
                             }
                         }
-                        "__some" => {
+                        "some" | "__some" => {
                             if arg_types.len() != 1 {
-                                self.error(*span, "__some expects 1 argument".to_string());
+                                self.error(*span, "some expects 1 argument".to_string());
                                 Ty::Unknown
                             } else {
                                 Ty::Option(Box::new(arg_types[0].clone()))
@@ -1261,5 +1312,8 @@ impl TypeChecker {
 }
 
 fn is_reserved_intrinsic(name: &str) -> bool {
-    matches!(name, "__none" | "__some" | "__is_none" | "__unwrap")
+    matches!(
+        name,
+        "none" | "some" | "is_none" | "unwrap" | "__none" | "__some" | "__is_none" | "__unwrap"
+    )
 }

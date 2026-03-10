@@ -60,12 +60,24 @@ impl Chunk {
         self.code.extend_from_slice(&value.to_le_bytes());
     }
 
-    pub fn add_constant(&mut self, constant: Constant) -> u16 {
+    pub fn add_constant(&mut self, constant: Constant) -> Result<u16, String> {
+        if let Some((index, _)) = self
+            .constants
+            .iter()
+            .enumerate()
+            .find(|(_, existing)| constants_equal(existing, &constant))
+        {
+            return Ok(index as u16);
+        }
+
         if self.constants.len() >= u16::MAX as usize {
-            panic!("constant pool overflow: maximum of {} entries", u16::MAX);
+            return Err(format!(
+                "constant pool overflow: maximum of {} entries",
+                u16::MAX
+            ));
         }
         self.constants.push(constant);
-        (self.constants.len() - 1) as u16
+        Ok((self.constants.len() - 1) as u16)
     }
 }
 
@@ -108,11 +120,12 @@ pub enum OpCode {
     Call = 22,
     Return = 23,
     BuildArray = 24,
-    GetIndex = 25,
-    SetIndex = 26,
-    GetProperty = 27,
-    SetProperty = 28,
-    Invoke = 29,
+    BuildArrayNil = 25,
+    GetIndex = 26,
+    SetIndex = 27,
+    GetProperty = 28,
+    SetProperty = 29,
+    Invoke = 30,
 }
 
 impl OpCode {
@@ -143,12 +156,45 @@ impl OpCode {
             22 => Some(Self::Call),
             23 => Some(Self::Return),
             24 => Some(Self::BuildArray),
-            25 => Some(Self::GetIndex),
-            26 => Some(Self::SetIndex),
-            27 => Some(Self::GetProperty),
-            28 => Some(Self::SetProperty),
-            29 => Some(Self::Invoke),
+            25 => Some(Self::BuildArrayNil),
+            26 => Some(Self::GetIndex),
+            27 => Some(Self::SetIndex),
+            28 => Some(Self::GetProperty),
+            29 => Some(Self::SetProperty),
+            30 => Some(Self::Invoke),
             _ => None,
         }
+    }
+}
+
+fn constants_equal(left: &Constant, right: &Constant) -> bool {
+    match (left, right) {
+        (Constant::Int(a), Constant::Int(b)) => a == b,
+        (Constant::Float(a), Constant::Float(b)) => a.to_bits() == b.to_bits(),
+        (Constant::Bool(a), Constant::Bool(b)) => a == b,
+        (Constant::String(a), Constant::String(b)) => a == b,
+        (Constant::Function(a), Constant::Function(b)) => a == b,
+        (Constant::Class(a), Constant::Class(b)) => a == b,
+        (Constant::Nil, Constant::Nil) => true,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Chunk, Constant};
+
+    #[test]
+    fn deduplicates_identical_constants() {
+        let mut chunk = Chunk::new();
+        let first = chunk
+            .add_constant(Constant::String("name".to_string()))
+            .expect("first constant");
+        let second = chunk
+            .add_constant(Constant::String("name".to_string()))
+            .expect("second constant");
+
+        assert_eq!(first, second);
+        assert_eq!(chunk.constants.len(), 1);
     }
 }

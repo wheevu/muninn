@@ -85,12 +85,12 @@ let b: Float[3] = a / 255;
 fn propagates_none_with_try_operator() {
     let src = r#"
 fn checked(v: Float) -> Option[Float] {
-    if (v > 0.0) { __some(v) } else { __none }
+    if (v > 0.0) { some(v) } else { none }
 }
 
 fn probe(v: Float) -> Option[Float] {
     let x: Float = checked(v)?;
-    __some(__unwrap(__none))
+    some(unwrap(none))
 }
 
 let out: Option[Float] = probe(-1.0);
@@ -103,7 +103,7 @@ print("out={out}");
 #[test]
 fn rejects_intrinsic_shadowing() {
     let src = r#"
-let __none: Int = 1;
+let none: Int = 1;
 "#;
 
     assert!(compile_and_run(src).is_err());
@@ -112,8 +112,8 @@ let __none: Int = 1;
 #[test]
 fn supports_string_relational_comparisons() {
     let src = r#"
-if ("alpha" < "beta") { 1 } else { __unwrap(__none) };
-if ("beta" > "alpha") { 1 } else { __unwrap(__none) };
+if ("alpha" < "beta") { 1 } else { unwrap(none) };
+if ("beta" > "alpha") { 1 } else { unwrap(none) };
 "#;
 
     assert!(compile_and_run(src).is_ok());
@@ -152,6 +152,112 @@ class GridHolder {
 
 let holder: GridHolder = GridHolder();
 holder.poke();
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}
+
+#[test]
+fn infers_local_binding_types() {
+    let src = r#"
+let x = 2;
+let y = x + 3;
+let z: Int = y;
+print("z={z}");
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}
+
+#[test]
+fn infers_constructor_type_for_local_binding() {
+    let src = r#"
+class Counter {
+    let value: Int;
+
+    fn init(start: Int) {
+        self.value = start;
+    }
+
+    fn bump(delta: Int) -> Int {
+        self.value = self.value + delta;
+        self.value
+    }
+}
+
+let counter = Counter(1);
+let out: Int = counter.bump(2);
+print("out={out}");
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}
+
+#[test]
+fn supports_grid_property_indexing_with_inferred_instance_type() {
+    let src = r#"
+class GridHolder {
+    let grid: Int[2, 2];
+
+    fn init() {
+        self.grid = [0, 0, 0, 0];
+    }
+}
+
+let holder = GridHolder();
+holder.grid[1, 0] = 5;
+print(holder.grid[1, 0]);
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}
+
+#[test]
+fn len_accepts_strings() {
+    let src = r#"
+let n: Int = len("muninn");
+print(n);
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}
+
+#[test]
+fn handles_deep_recursion_without_host_stack_overflow() {
+    let src = r#"
+fn down(n: Int) -> Int {
+    if (n == 0) { 0 } else { down(n - 1) }
+}
+
+let out: Int = down(5000);
+print(out);
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}
+
+#[test]
+fn supports_nested_grid_property_indexing() {
+    let src = r#"
+class GridHolder {
+    let grid: Int[2, 2];
+
+    fn init() {
+        self.grid = [0, 0, 0, 0];
+    }
+}
+
+class Wrapper {
+    let holder: GridHolder;
+
+    fn init() {
+        self.holder = GridHolder();
+    }
+}
+
+let wrapper = Wrapper();
+wrapper.holder.grid[1, 1] = 9;
+print(wrapper.holder.grid[1, 1]);
 "#;
 
     assert!(compile_and_run(src).is_ok());

@@ -9,14 +9,14 @@ Pipeline:
 
 ## Key features
 
-- Mandatory typed declarations: `let x: Int = 5;`
+- Typed declarations with optional local inference: `let x: Int = 5;`, `let y = 5;`
 - Classes with fields, methods, and `init`
 - Expression-based `if`/blocks and `unless`
 - Pipeline operator: `x |> f(y)`
 - Native 2D grid syntax: `Int[5, 5]`, `grid[x, y]`
 - Range loops: `for i in 0..10 { ... }`
 - String interpolation: `"value={x}"`
-- Option propagation: `Option[T]`, `expr?`
+- Option propagation: `Option[T]`, `expr?`, `some(value)`, `none`
 - Vectorized math for arrays:
   - same-shape array ops (`+`, `-`, `*`, `/`)
   - strict scalar promotion (`array * 2.0`, `2.0 * array`)
@@ -27,7 +27,7 @@ Example file: `examples/feature_tour.mun`
 
 ```muninn
 fn checked_scale(scale: Float) -> Option[Float] {
-    if (scale == 0.0) { __none } else { __some(scale) }
+    if (scale == 0.0) { none } else { some(scale) }
 }
 
 class Perceptron {
@@ -45,7 +45,7 @@ class Perceptron {
         let weighted: Float[3] = normalized * self.weights;
         let shifted: Float[3] = 0.9 * (weighted + 0.05);
         let score: Float = shifted[0] + shifted[1] + shifted[2] + self.bias;
-        __some(unless (score > 0.0) { 0.0 } else { 1.0 })
+        some(unless (score > 0.0) { 0.0 } else { 1.0 })
     }
 }
 
@@ -55,7 +55,7 @@ for i in 0..2 {
 }
 
 let p: Perceptron = Perceptron([0.2, -0.5, 0.1], 0.3);
-let output: Option[Float] = [210.0, 140.0, 70.0] |> p.forward(255.0);
+let output = [210.0, 140.0, 70.0] |> p.forward(255.0);
 print("output={output}, grid00={grid[0, 0]}");
 ```
 

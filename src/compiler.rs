@@ -54,6 +54,22 @@ impl ModuleCompiler {
         self.module.functions.len() - 1
     }
 
+    fn make_constant(
+        &mut self,
+        compiler: &mut FunctionCompiler,
+        constant: Constant,
+        span: Span,
+    ) -> Option<u16> {
+        match compiler.make_constant(constant) {
+            Ok(idx) => Some(idx),
+            Err(message) => {
+                self.errors
+                    .push(MuninnError::new("compiler", message, span));
+                None
+            }
+        }
+    }
+
     fn compile_stmt(&mut self, compiler: &mut FunctionCompiler, stmt: &Stmt) {
         match stmt {
             Stmt::Let {
@@ -64,7 +80,11 @@ impl ModuleCompiler {
             } => {
                 self.compile_expr(compiler, initializer);
                 if compiler.scope_depth == 0 {
-                    let name_idx = compiler.make_constant(Constant::String(name.clone()));
+                    let Some(name_idx) =
+                        self.make_constant(compiler, Constant::String(name.clone()), *span)
+                    else {
+                        return;
+                    };
                     compiler.emit_op(OpCode::DefineGlobal);
                     compiler.emit_u16(name_idx);
                 } else {
@@ -76,12 +96,22 @@ impl ModuleCompiler {
             }
             Stmt::Function(function) => {
                 let function_id = self.compile_function(function, false);
-                let const_idx = compiler.make_constant(Constant::Function(function_id));
+                let Some(const_idx) =
+                    self.make_constant(compiler, Constant::Function(function_id), function.span)
+                else {
+                    return;
+                };
                 compiler.emit_op(OpCode::Constant);
                 compiler.emit_u16(const_idx);
 
                 if compiler.scope_depth == 0 {
-                    let name_idx = compiler.make_constant(Constant::String(function.name.clone()));
+                    let Some(name_idx) = self.make_constant(
+                        compiler,
+                        Constant::String(function.name.clone()),
+                        function.span,
+                    ) else {
+                        return;
+                    };
                     compiler.emit_op(OpCode::DefineGlobal);
                     compiler.emit_u16(name_idx);
                 } else {
@@ -110,12 +140,22 @@ impl ModuleCompiler {
                     init,
                 }));
 
-                let class_const = compiler.make_constant(Constant::Class(class_id));
+                let Some(class_const) =
+                    self.make_constant(compiler, Constant::Class(class_id), class.span)
+                else {
+                    return;
+                };
                 compiler.emit_op(OpCode::Constant);
                 compiler.emit_u16(class_const);
 
                 if compiler.scope_depth == 0 {
-                    let name_idx = compiler.make_constant(Constant::String(class.name.clone()));
+                    let Some(name_idx) = self.make_constant(
+                        compiler,
+                        Constant::String(class.name.clone()),
+                        class.span,
+                    ) else {
+                        return;
+                    };
                     compiler.emit_op(OpCode::DefineGlobal);
                     compiler.emit_u16(name_idx);
                 } else {
@@ -201,20 +241,31 @@ impl ModuleCompiler {
 
     fn compile_expr(&mut self, compiler: &mut FunctionCompiler, expr: &Expr) {
         match expr {
-            Expr::Int(value, _) => {
-                let idx = compiler.make_constant(Constant::Int(*value));
+            Expr::Int(value, span) => {
+                let Some(idx) = self.make_constant(compiler, Constant::Int(*value), *span) else {
+                    compiler.emit_op(OpCode::Nil);
+                    return;
+                };
                 compiler.emit_op(OpCode::Constant);
                 compiler.emit_u16(idx);
             }
-            Expr::Float(value, _) => {
-                let idx = compiler.make_constant(Constant::Float(*value));
+            Expr::Float(value, span) => {
+                let Some(idx) = self.make_constant(compiler, Constant::Float(*value), *span) else {
+                    compiler.emit_op(OpCode::Nil);
+                    return;
+                };
                 compiler.emit_op(OpCode::Constant);
                 compiler.emit_u16(idx);
             }
             Expr::Bool(true, _) => compiler.emit_op(OpCode::True),
             Expr::Bool(false, _) => compiler.emit_op(OpCode::False),
-            Expr::String(value, _) => {
-                let idx = compiler.make_constant(Constant::String(value.clone()));
+            Expr::String(value, span) => {
+                let Some(idx) =
+                    self.make_constant(compiler, Constant::String(value.clone()), *span)
+                else {
+                    compiler.emit_op(OpCode::Nil);
+                    return;
+                };
                 compiler.emit_op(OpCode::Constant);
                 compiler.emit_u16(idx);
             }
@@ -223,7 +274,12 @@ impl ModuleCompiler {
                     compiler.emit_op(OpCode::GetLocal);
                     compiler.emit_u16(slot as u16);
                 } else {
-                    let idx = compiler.make_constant(Constant::String(name.clone()));
+                    let Some(idx) =
+                        self.make_constant(compiler, Constant::String(name.clone()), *span)
+                    else {
+                        compiler.emit_op(OpCode::Nil);
+                        return;
+                    };
                     compiler.emit_op(OpCode::GetGlobal);
                     compiler.emit_u16(idx);
                 }
@@ -338,7 +394,12 @@ impl ModuleCompiler {
                     for arg in args {
                         self.compile_expr(compiler, arg);
                     }
-                    let name_idx = compiler.make_constant(Constant::String(name.clone()));
+                    let Some(name_idx) =
+                        self.make_constant(compiler, Constant::String(name.clone()), callee.span())
+                    else {
+                        compiler.emit_op(OpCode::Nil);
+                        return;
+                    };
                     compiler.emit_op(OpCode::Invoke);
                     compiler.emit_u16(name_idx);
                     compiler.emit_u8(args.len() as u8);
@@ -356,9 +417,14 @@ impl ModuleCompiler {
                 "pipeline should be desugared before compilation",
                 *span,
             )),
-            Expr::Property { object, name, .. } => {
+            Expr::Property { object, name, span } => {
                 self.compile_expr(compiler, object);
-                let name_idx = compiler.make_constant(Constant::String(name.clone()));
+                let Some(name_idx) =
+                    self.make_constant(compiler, Constant::String(name.clone()), *span)
+                else {
+                    compiler.emit_op(OpCode::Nil);
+                    return;
+                };
                 compiler.emit_op(OpCode::GetProperty);
                 compiler.emit_u16(name_idx);
             }
@@ -441,16 +507,17 @@ impl ModuleCompiler {
         compiler.emit_u16(right_slot as u16);
         compiler.emit_op(OpCode::Pop);
 
-        for _ in 0..len {
-            compiler.emit_op(OpCode::Nil);
-        }
-        compiler.emit_op(OpCode::BuildArray);
+        compiler.emit_op(OpCode::BuildArrayNil);
         compiler.emit_u16(len as u16);
         compiler.emit_op(OpCode::SetLocal);
         compiler.emit_u16(result_slot as u16);
         compiler.emit_op(OpCode::Pop);
 
-        let zero_idx = compiler.make_constant(Constant::Int(0));
+        let Some(zero_idx) = self.make_constant(compiler, Constant::Int(0), span) else {
+            compiler.end_scope();
+            compiler.emit_op(OpCode::Nil);
+            return;
+        };
         compiler.emit_op(OpCode::Constant);
         compiler.emit_u16(zero_idx);
         compiler.emit_op(OpCode::SetLocal);
@@ -460,7 +527,11 @@ impl ModuleCompiler {
         let loop_start = compiler.current_offset();
         compiler.emit_op(OpCode::GetLocal);
         compiler.emit_u16(index_slot as u16);
-        let len_idx = compiler.make_constant(Constant::Int(len as i64));
+        let Some(len_idx) = self.make_constant(compiler, Constant::Int(len as i64), span) else {
+            compiler.end_scope();
+            compiler.emit_op(OpCode::Nil);
+            return;
+        };
         compiler.emit_op(OpCode::Constant);
         compiler.emit_u16(len_idx);
         compiler.emit_op(OpCode::Less);
@@ -522,7 +593,11 @@ impl ModuleCompiler {
 
         compiler.emit_op(OpCode::GetLocal);
         compiler.emit_u16(index_slot as u16);
-        let one_idx = compiler.make_constant(Constant::Int(1));
+        let Some(one_idx) = self.make_constant(compiler, Constant::Int(1), span) else {
+            compiler.end_scope();
+            compiler.emit_op(OpCode::Nil);
+            return;
+        };
         compiler.emit_op(OpCode::Constant);
         compiler.emit_u16(one_idx);
         compiler.emit_op(OpCode::Add);
@@ -553,7 +628,12 @@ impl ModuleCompiler {
                     compiler.emit_op(OpCode::SetLocal);
                     compiler.emit_u16(slot as u16);
                 } else {
-                    let idx = compiler.make_constant(Constant::String(name.clone()));
+                    let Some(idx) =
+                        self.make_constant(compiler, Constant::String(name.clone()), span)
+                    else {
+                        compiler.emit_op(OpCode::Nil);
+                        return;
+                    };
                     compiler.emit_op(OpCode::SetGlobal);
                     compiler.emit_u16(idx);
                 }
@@ -561,7 +641,11 @@ impl ModuleCompiler {
             AssignTarget::Property { object, name, .. } => {
                 self.compile_expr(compiler, object);
                 self.compile_expr(compiler, value);
-                let idx = compiler.make_constant(Constant::String(name.clone()));
+                let Some(idx) = self.make_constant(compiler, Constant::String(name.clone()), span)
+                else {
+                    compiler.emit_op(OpCode::Nil);
+                    return;
+                };
                 compiler.emit_op(OpCode::SetProperty);
                 compiler.emit_u16(idx);
             }
@@ -626,7 +710,9 @@ impl FunctionCompiler {
 
     fn end_scope(&mut self) {
         self.scope_depth = self.scope_depth.saturating_sub(1);
-        self.scopes.pop();
+        if let Some(scope) = self.scopes.pop() {
+            self.next_local = self.next_local.saturating_sub(scope.len());
+        }
     }
 
     fn declare_local(&mut self, name: String, _span: Span) -> usize {
@@ -650,7 +736,7 @@ impl FunctionCompiler {
         None
     }
 
-    fn make_constant(&mut self, constant: Constant) -> u16 {
+    fn make_constant(&mut self, constant: Constant) -> Result<u16, String> {
         self.chunk.add_constant(constant)
     }
 
@@ -695,5 +781,43 @@ impl FunctionCompiler {
             "loop offset exceeds u16 operand capacity"
         );
         self.emit_u16(offset as u16);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::compiler::compile_program;
+    use crate::desugar::desugar_program;
+    use crate::lexer::Lexer;
+    use crate::lower::lower_program;
+    use crate::parser::Parser;
+    use crate::typecheck::check_program;
+
+    #[test]
+    fn reuses_local_slots_across_sibling_scopes() {
+        let src = r#"
+fn f() -> Int {
+    { let a: Int = 1; a };
+    { let b: Int = 2; b };
+    3
+}
+
+let out: Int = f();
+"#;
+
+        let tokens = Lexer::new(src).lex().expect("tokens");
+        let mut parser = Parser::new(tokens);
+        let parsed = parser.parse_program().expect("program");
+        let desugared = desugar_program(parsed).expect("desugar");
+        let type_context = check_program(&desugared).expect("typecheck");
+        let lowered = lower_program(desugared, &type_context);
+        let module = compile_program(&lowered).expect("bytecode");
+
+        let function = module
+            .functions
+            .iter()
+            .find(|f| f.name == "f")
+            .expect("function f");
+        assert_eq!(function.local_count, 1);
     }
 }

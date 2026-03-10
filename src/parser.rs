@@ -17,12 +17,24 @@ impl Parser {
         Self { tokens, current: 0 }
     }
 
-    pub fn parse_program(&mut self) -> Result<Program, MuninnError> {
+    pub fn parse_program(&mut self) -> Result<Program, Vec<MuninnError>> {
         let mut statements = Vec::new();
+        let mut errors = Vec::new();
         while !self.is_at_end() {
-            statements.push(self.parse_declaration()?);
+            match self.parse_declaration() {
+                Ok(stmt) => statements.push(stmt),
+                Err(err) => {
+                    errors.push(err);
+                    self.synchronize();
+                }
+            }
         }
-        Ok(Program { statements })
+
+        if errors.is_empty() {
+            Ok(Program { statements })
+        } else {
+            Err(errors)
+        }
     }
 
     fn parse_declaration(&mut self) -> Result<Stmt, MuninnError> {
@@ -42,14 +54,14 @@ impl Parser {
         let mutable = self.match_where(|k| matches!(k, TokenKind::Mut));
         let name = self.consume_identifier("expected variable name after let")?;
         let span = self.previous().span;
-        self.consume_where(
-            |k| matches!(k, TokenKind::Colon),
-            "expected ':' after variable name",
-        )?;
-        let ty = self.parse_type_expr()?;
+        let ty = if self.match_where(|k| matches!(k, TokenKind::Colon)) {
+            Some(self.parse_type_expr()?)
+        } else {
+            None
+        };
         self.consume_where(
             |k| matches!(k, TokenKind::Equal),
-            "expected '=' after variable type annotation",
+            "expected '=' after variable declaration",
         )?;
         let initializer = self.parse_expression()?;
         self.consume_where(
@@ -906,6 +918,30 @@ impl Parser {
             &self.tokens[self.current - 1]
         }
     }
+
+    fn synchronize(&mut self) {
+        while !self.is_at_end() {
+            if matches!(self.peek().kind, TokenKind::Semicolon) {
+                self.advance();
+                return;
+            }
+
+            if matches!(
+                self.peek().kind,
+                TokenKind::Class
+                    | TokenKind::Fn
+                    | TokenKind::Let
+                    | TokenKind::Return
+                    | TokenKind::While
+                    | TokenKind::For
+                    | TokenKind::RightBrace
+            ) {
+                return;
+            }
+
+            self.advance();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -956,5 +992,23 @@ fn run(v: Float) -> Option[Float] {
         let tokens = Lexer::new(src).lex().expect("tokens");
         let mut parser = Parser::new(tokens);
         assert!(parser.parse_program().is_err());
+    }
+
+    #[test]
+    fn parses_inferred_let_binding() {
+        let src = "let x = 1; let y = x + 2;";
+        let tokens = Lexer::new(src).lex().expect("tokens");
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().expect("program");
+        assert_eq!(program.statements.len(), 2);
+    }
+
+    #[test]
+    fn recovers_and_reports_multiple_errors() {
+        let src = "let x: Int = ; let y: Float = ;";
+        let tokens = Lexer::new(src).lex().expect("tokens");
+        let mut parser = Parser::new(tokens);
+        let errors = parser.parse_program().expect_err("expected parser errors");
+        assert!(errors.len() >= 2);
     }
 }

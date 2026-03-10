@@ -24,7 +24,7 @@ use vm::{Value, Vm};
 pub fn compile_and_run(source: &str) -> Result<Value, Vec<MuninnError>> {
     let tokens = Lexer::new(source).lex()?;
     let mut parser = Parser::new(tokens);
-    let parsed = parser.parse_program().map_err(|err| vec![err])?;
+    let parsed = parser.parse_program()?;
     let desugared: Program = desugar_program(parsed).map_err(|err| vec![err])?;
     let type_context = check_program(&desugared)?;
     let lowered = lower_program(desugared, &type_context);

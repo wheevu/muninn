@@ -10,7 +10,7 @@ pub enum Stmt {
     Let {
         name: String,
         mutable: bool,
-        ty: TypeExpr,
+        ty: Option<TypeExpr>,
         initializer: Expr,
         span: Span,
     },
