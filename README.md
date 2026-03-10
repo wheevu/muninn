@@ -1,7 +1,7 @@
 # Muninn 🐦‍⬛
 
 Muninn is a statically typed, expression-oriented language implemented in Rust.
-It compiles to custom bytecode and runs on a custom stack VM. 🤸🏻
+It compiles to bytecode and runs on a stack VM. 🤸🏻
 
 Pipeline:
 
