@@ -10,11 +10,20 @@ Pipeline:
 ## Key features
 
 - Typed declarations with optional local inference: `let x: Int = 5;`, `let y = 5;`
+- Function return-type inference: `fn add(a: Int, b: Int) { a + b }`
 - Classes with fields, methods, and `init`
+- Generic declarations for functions/classes and generic type application:
+  - `fn id<T>(x: T) -> T { x }`
+  - `let xs: Option<Int> = some(1)`
 - Expression-based `if`/blocks and `unless`
+- `match` expressions and enums (unit variants):
+  - `enum Mode { Fast, Slow }`
+  - `match (mode) { Mode.Fast => 1, Slow => 0, _ => -1 }`
 - Pipeline operator: `x |> f(y)`
+- Short-circuit logical operators: `&&`, `||`
 - Native 2D grid syntax: `Int[5, 5]`, `grid[x, y]`
 - Range loops: `for i in 0..10 { ... }`
+- Loop control statements: `break`, `continue`
 - String interpolation: `"value={x}"`
 - Option propagation: `Option[T]`, `expr?`, `some(value)`, `none`
 - Vectorized math for arrays:
@@ -49,6 +58,16 @@ class Perceptron {
     }
 }
 
+enum Mode { Fast, Slow }
+
+fn classify(score: Float) {
+    match (score > 0.0) {
+        true => Mode.Fast,
+        false => Mode.Slow,
+        _ => Mode.Slow,
+    }
+}
+
 let mut grid: Int[2, 2] = [0, 0, 0, 0];
 for i in 0..2 {
     grid[i, i] = i + 1;
@@ -56,6 +75,7 @@ for i in 0..2 {
 
 let p: Perceptron = Perceptron([0.2, -0.5, 0.1], 0.3);
 let output = [210.0, 140.0, 70.0] |> p.forward(255.0);
+let mode = classify(unwrap(output));
 print("output={output}, grid00={grid[0, 0]}");
 ```
 

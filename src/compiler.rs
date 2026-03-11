@@ -165,6 +165,7 @@ impl ModuleCompiler {
                     compiler.emit_op(OpCode::Pop);
                 }
             }
+            Stmt::Enum(_) => {}
             Stmt::Return { value, .. } => {
                 if let Some(value) = value {
                     self.compile_expr(compiler, value);
@@ -173,10 +174,33 @@ impl ModuleCompiler {
                 }
                 compiler.emit_op(OpCode::Return);
             }
+            Stmt::Break { span } => {
+                if let Some(jump) = compiler.emit_break_jump() {
+                    compiler.register_break_jump(jump);
+                } else {
+                    self.errors.push(MuninnError::new(
+                        "compiler",
+                        "break can only be used inside loops",
+                        *span,
+                    ));
+                }
+            }
+            Stmt::Continue { span } => {
+                if let Some(loop_start) = compiler.current_loop_start() {
+                    compiler.emit_loop(loop_start);
+                } else {
+                    self.errors.push(MuninnError::new(
+                        "compiler",
+                        "continue can only be used inside loops",
+                        *span,
+                    ));
+                }
+            }
             Stmt::While {
                 condition, body, ..
             } => {
                 let loop_start = compiler.current_offset();
+                compiler.begin_loop(loop_start);
                 self.compile_expr(compiler, condition);
                 let exit_jump = compiler.emit_jump(OpCode::JumpIfFalse);
                 compiler.emit_op(OpCode::Pop);
@@ -184,6 +208,11 @@ impl ModuleCompiler {
                 compiler.emit_loop(loop_start);
                 compiler.patch_jump(exit_jump);
                 compiler.emit_op(OpCode::Pop);
+                if let Some(break_jumps) = compiler.end_loop() {
+                    for jump in break_jumps {
+                        compiler.patch_jump(jump);
+                    }
+                }
             }
             Stmt::ForRange { span, .. } => {
                 self.errors.push(MuninnError::new(
@@ -334,31 +363,59 @@ impl ModuleCompiler {
             }
             Expr::Binary {
                 left, op, right, ..
-            } => {
-                self.compile_expr(compiler, left);
-                self.compile_expr(compiler, right);
-                match op {
-                    BinaryOp::Add => compiler.emit_op(OpCode::Add),
-                    BinaryOp::Subtract => compiler.emit_op(OpCode::Subtract),
-                    BinaryOp::Multiply => compiler.emit_op(OpCode::Multiply),
-                    BinaryOp::Divide => compiler.emit_op(OpCode::Divide),
-                    BinaryOp::Equal => compiler.emit_op(OpCode::Equal),
-                    BinaryOp::NotEqual => {
-                        compiler.emit_op(OpCode::Equal);
-                        compiler.emit_op(OpCode::Not);
-                    }
-                    BinaryOp::Greater => compiler.emit_op(OpCode::Greater),
-                    BinaryOp::Less => compiler.emit_op(OpCode::Less),
-                    BinaryOp::GreaterEqual => {
-                        compiler.emit_op(OpCode::Less);
-                        compiler.emit_op(OpCode::Not);
-                    }
-                    BinaryOp::LessEqual => {
-                        compiler.emit_op(OpCode::Greater);
-                        compiler.emit_op(OpCode::Not);
+            } => match op {
+                BinaryOp::And => {
+                    self.compile_expr(compiler, left);
+                    let false_jump = compiler.emit_jump(OpCode::JumpIfFalse);
+                    compiler.emit_op(OpCode::Pop);
+                    self.compile_expr(compiler, right);
+                    compiler.patch_jump(false_jump);
+                }
+                BinaryOp::Or => {
+                    self.compile_expr(compiler, left);
+                    let false_jump = compiler.emit_jump(OpCode::JumpIfFalse);
+                    let end_jump = compiler.emit_jump(OpCode::Jump);
+                    compiler.patch_jump(false_jump);
+                    compiler.emit_op(OpCode::Pop);
+                    self.compile_expr(compiler, right);
+                    compiler.patch_jump(end_jump);
+                }
+                BinaryOp::Add
+                | BinaryOp::Subtract
+                | BinaryOp::Multiply
+                | BinaryOp::Divide
+                | BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Greater
+                | BinaryOp::GreaterEqual
+                | BinaryOp::Less
+                | BinaryOp::LessEqual => {
+                    self.compile_expr(compiler, left);
+                    self.compile_expr(compiler, right);
+                    match op {
+                        BinaryOp::Add => compiler.emit_op(OpCode::Add),
+                        BinaryOp::Subtract => compiler.emit_op(OpCode::Subtract),
+                        BinaryOp::Multiply => compiler.emit_op(OpCode::Multiply),
+                        BinaryOp::Divide => compiler.emit_op(OpCode::Divide),
+                        BinaryOp::Equal => compiler.emit_op(OpCode::Equal),
+                        BinaryOp::NotEqual => {
+                            compiler.emit_op(OpCode::Equal);
+                            compiler.emit_op(OpCode::Not);
+                        }
+                        BinaryOp::Greater => compiler.emit_op(OpCode::Greater),
+                        BinaryOp::Less => compiler.emit_op(OpCode::Less),
+                        BinaryOp::GreaterEqual => {
+                            compiler.emit_op(OpCode::Less);
+                            compiler.emit_op(OpCode::Not);
+                        }
+                        BinaryOp::LessEqual => {
+                            compiler.emit_op(OpCode::Greater);
+                            compiler.emit_op(OpCode::Not);
+                        }
+                        BinaryOp::And | BinaryOp::Or => unreachable!(),
                     }
                 }
-            }
+            },
             Expr::VecBinary {
                 left,
                 op,
@@ -386,6 +443,11 @@ impl ModuleCompiler {
             Expr::Unless { span, .. } => self.errors.push(MuninnError::new(
                 "compiler",
                 "unless should be desugared before compilation",
+                *span,
+            )),
+            Expr::Match { span, .. } => self.errors.push(MuninnError::new(
+                "compiler",
+                "match should be desugared before compilation",
                 *span,
             )),
             Expr::Call { callee, args, .. } => {
@@ -417,6 +479,20 @@ impl ModuleCompiler {
                 "pipeline should be desugared before compilation",
                 *span,
             )),
+            Expr::EnumVariant {
+                enum_name,
+                variant_name,
+                span,
+            } => {
+                let global_name = format!("{}.{}", enum_name, variant_name);
+                let Some(idx) = self.make_constant(compiler, Constant::String(global_name), *span)
+                else {
+                    compiler.emit_op(OpCode::Nil);
+                    return;
+                };
+                compiler.emit_op(OpCode::GetGlobal);
+                compiler.emit_u16(idx);
+            }
             Expr::Property { object, name, span } => {
                 self.compile_expr(compiler, object);
                 let Some(name_idx) =
@@ -679,6 +755,13 @@ struct FunctionCompiler {
     scope_depth: usize,
     next_local: usize,
     max_local: usize,
+    loop_stack: Vec<LoopContext>,
+}
+
+#[derive(Clone)]
+struct LoopContext {
+    start: usize,
+    break_jumps: Vec<usize>,
 }
 
 impl FunctionCompiler {
@@ -691,6 +774,7 @@ impl FunctionCompiler {
             scope_depth: 0,
             next_local: 0,
             max_local: 0,
+            loop_stack: Vec::new(),
         }
     }
 
@@ -781,6 +865,32 @@ impl FunctionCompiler {
             "loop offset exceeds u16 operand capacity"
         );
         self.emit_u16(offset as u16);
+    }
+
+    fn begin_loop(&mut self, start: usize) {
+        self.loop_stack.push(LoopContext {
+            start,
+            break_jumps: Vec::new(),
+        });
+    }
+
+    fn end_loop(&mut self) -> Option<Vec<usize>> {
+        self.loop_stack.pop().map(|ctx| ctx.break_jumps)
+    }
+
+    fn current_loop_start(&self) -> Option<usize> {
+        self.loop_stack.last().map(|ctx| ctx.start)
+    }
+
+    fn emit_break_jump(&mut self) -> Option<usize> {
+        self.current_loop_start()?;
+        Some(self.emit_jump(OpCode::Jump))
+    }
+
+    fn register_break_jump(&mut self, jump: usize) {
+        if let Some(ctx) = self.loop_stack.last_mut() {
+            ctx.break_jumps.push(jump);
+        }
     }
 }
 

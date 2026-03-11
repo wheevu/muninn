@@ -262,3 +262,66 @@ print(wrapper.holder.grid[1, 1]);
 
     assert!(compile_and_run(src).is_ok());
 }
+
+#[test]
+fn supports_short_circuit_logic() {
+    let src = r#"
+let a: Bool = false && (1 / 0 == 0);
+let b: Bool = true || (1 / 0 == 0);
+if (a == false && b == true) { 1 } else { unwrap(none) };
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}
+
+#[test]
+fn supports_break_and_continue() {
+    let src = r#"
+let mut i: Int = 0;
+let mut total: Int = 0;
+while (i < 10) {
+    i = i + 1;
+    if (i < 3) { continue; } else { };
+    total = total + i;
+    if (i == 5) { break; } else { };
+}
+print(total);
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}
+
+#[test]
+fn supports_enum_match_and_inferred_return_types() {
+    let src = r#"
+enum Mode { Fast, Slow }
+
+fn choose(flag: Bool) {
+    if (flag) { Mode.Fast } else { Mode.Slow }
+}
+
+let mode = choose(true);
+let score: Int = match (mode) {
+    Mode.Fast => 10,
+    Slow => 5,
+    _ => 0,
+};
+print(score);
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}
+
+#[test]
+fn supports_generic_function_syntax() {
+    let src = r#"
+fn id<T>(x: T) -> T {
+    x
+}
+
+let out: Int = id(7);
+print(out);
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}

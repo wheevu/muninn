@@ -16,8 +16,15 @@ pub enum Stmt {
     },
     Function(FunctionDecl),
     Class(ClassDecl),
+    Enum(EnumDecl),
     Return {
         value: Option<Expr>,
+        span: Span,
+    },
+    Break {
+        span: Span,
+    },
+    Continue {
         span: Span,
     },
     While {
@@ -41,8 +48,9 @@ pub enum Stmt {
 #[derive(Debug, Clone)]
 pub struct FunctionDecl {
     pub name: String,
+    pub type_params: Vec<String>,
     pub params: Vec<Param>,
-    pub return_type: TypeExpr,
+    pub return_type: Option<TypeExpr>,
     pub body: BlockExpr,
     pub span: Span,
 }
@@ -50,9 +58,17 @@ pub struct FunctionDecl {
 #[derive(Debug, Clone)]
 pub struct ClassDecl {
     pub name: String,
+    pub type_params: Vec<String>,
     pub fields: Vec<FieldDecl>,
     pub methods: Vec<FunctionDecl>,
     pub init: Option<FunctionDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumDecl {
+    pub name: String,
+    pub variants: Vec<String>,
     pub span: Span,
 }
 
@@ -119,9 +135,19 @@ pub enum Expr {
         else_branch: Option<BlockExpr>,
         span: Span,
     },
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+        span: Span,
+    },
     Call {
         callee: Box<Expr>,
         args: Vec<Expr>,
+        span: Span,
+    },
+    EnumVariant {
+        enum_name: String,
+        variant_name: String,
         span: Span,
     },
     Pipeline {
@@ -195,6 +221,23 @@ pub enum InterpolationPart {
     Expr(Expr),
 }
 
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: MatchPattern,
+    pub expr: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum MatchPattern {
+    EnumVariant {
+        enum_name: String,
+        variant_name: String,
+    },
+    Variant(String),
+    Wildcard,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
     Negate,
@@ -203,6 +246,8 @@ pub enum UnaryOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
+    And,
+    Or,
     Add,
     Subtract,
     Multiply,
@@ -223,6 +268,10 @@ pub enum TypeExpr {
     Bool,
     Void,
     Named(String),
+    Applied {
+        name: String,
+        args: Vec<TypeExpr>,
+    },
     Option(Box<TypeExpr>),
     Array {
         element: Box<TypeExpr>,
@@ -254,8 +303,10 @@ impl Expr {
             | Expr::VecBinary { span, .. }
             | Expr::If { span, .. }
             | Expr::Unless { span, .. }
+            | Expr::Match { span, .. }
             | Expr::Call { span, .. }
             | Expr::Pipeline { span, .. }
+            | Expr::EnumVariant { span, .. }
             | Expr::Property { span, .. }
             | Expr::Index { span, .. }
             | Expr::GridIndex { span, .. }

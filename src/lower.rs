@@ -51,10 +51,13 @@ impl<'a> Lowerer<'a> {
                 class.init = class.init.map(|init| self.lower_function(init));
                 Stmt::Class(class)
             }
+            Stmt::Enum(decl) => Stmt::Enum(decl),
             Stmt::Return { value, span } => Stmt::Return {
                 value: value.map(|expr| self.lower_expr(expr)),
                 span,
             },
+            Stmt::Break { span } => Stmt::Break { span },
+            Stmt::Continue { span } => Stmt::Continue { span },
             Stmt::While {
                 condition,
                 body,
@@ -181,9 +184,33 @@ impl<'a> Lowerer<'a> {
                 else_branch: else_branch.map(|branch| self.lower_block(branch)),
                 span,
             },
+            Expr::Match {
+                scrutinee,
+                arms,
+                span,
+            } => Expr::Match {
+                scrutinee: Box::new(self.lower_expr(*scrutinee)),
+                arms: arms
+                    .into_iter()
+                    .map(|mut arm| {
+                        arm.expr = self.lower_expr(arm.expr);
+                        arm
+                    })
+                    .collect(),
+                span,
+            },
             Expr::Call { callee, args, span } => Expr::Call {
                 callee: Box::new(self.lower_expr(*callee)),
                 args: args.into_iter().map(|arg| self.lower_expr(arg)).collect(),
+                span,
+            },
+            Expr::EnumVariant {
+                enum_name,
+                variant_name,
+                span,
+            } => Expr::EnumVariant {
+                enum_name,
+                variant_name,
                 span,
             },
             Expr::Pipeline {

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
     AssignTarget, BinaryOp, BlockExpr, ClassDecl, Expr, FunctionDecl, Program, Stmt, TypeExpr,
@@ -14,6 +14,7 @@ pub enum Ty {
     Bool,
     String,
     Void,
+    Enum(String),
     Option(Box<Ty>),
     Array(Box<Ty>, usize),
     Function(Vec<Ty>, Box<Ty>),
@@ -74,9 +75,12 @@ pub fn check_program(program: &Program) -> Result<TypeContext, Vec<MuninnError>>
 struct TypeChecker {
     scopes: Vec<HashMap<String, Symbol>>,
     classes: HashMap<String, ClassInfo>,
+    enums: HashMap<String, HashSet<String>>,
     errors: Vec<MuninnError>,
     current_return: Ty,
     current_class: Option<String>,
+    loop_depth: usize,
+    generic_params: Vec<HashSet<String>>,
     type_context: TypeContext,
 }
 
@@ -85,9 +89,12 @@ impl TypeChecker {
         let mut checker = Self {
             scopes: vec![HashMap::new()],
             classes: HashMap::new(),
+            enums: HashMap::new(),
             errors: Vec::new(),
             current_return: Ty::Void,
             current_class: None,
+            loop_depth: 0,
+            generic_params: vec![HashSet::new()],
             type_context: TypeContext::default(),
         };
 
@@ -227,6 +234,18 @@ impl TypeChecker {
                     );
                 }
                 Stmt::Class(class) => self.collect_class(class),
+                Stmt::Enum(decl) => {
+                    let variants: HashSet<String> = decl.variants.iter().cloned().collect();
+                    self.enums.insert(decl.name.clone(), variants);
+                    self.define(
+                        decl.name.clone(),
+                        Symbol {
+                            ty: Ty::Enum(decl.name.clone()),
+                            mutable: false,
+                        },
+                        decl.span,
+                    );
+                }
                 _ => {}
             }
         }
@@ -255,7 +274,11 @@ impl TypeChecker {
                     .iter()
                     .map(|param| self.resolve_type(&param.ty, param.span))
                     .collect(),
-                ret: self.resolve_type(&method.return_type, method.span),
+                ret: method
+                    .return_type
+                    .as_ref()
+                    .map(|ty| self.resolve_type(ty, method.span))
+                    .unwrap_or(Ty::Unknown),
             };
             methods.insert(method.name.clone(), sig);
         }
@@ -339,6 +362,7 @@ impl TypeChecker {
             }
             Stmt::Function(function) => self.check_function(function, None),
             Stmt::Class(class) => self.check_class(class),
+            Stmt::Enum(_) => {}
             Stmt::Return { value, span } => {
                 let actual = value
                     .as_ref()
@@ -363,7 +387,19 @@ impl TypeChecker {
                 if cond_ty != Ty::Bool {
                     self.error(*span, "while condition must be Bool".to_string());
                 }
+                self.loop_depth += 1;
                 self.check_block(body);
+                self.loop_depth = self.loop_depth.saturating_sub(1);
+            }
+            Stmt::Break { span } => {
+                if self.loop_depth == 0 {
+                    self.error(*span, "break can only be used inside loops".to_string());
+                }
+            }
+            Stmt::Continue { span } => {
+                if self.loop_depth == 0 {
+                    self.error(*span, "continue can only be used inside loops".to_string());
+                }
             }
             Stmt::ForRange { span, .. } => {
                 self.error(
@@ -382,7 +418,14 @@ impl TypeChecker {
         let previous_return = self.current_return.clone();
         let previous_class = self.current_class.clone();
 
-        self.current_return = self.resolve_type(&function.return_type, function.span);
+        let params_scope: HashSet<String> = function.type_params.iter().cloned().collect();
+        self.generic_params.push(params_scope);
+
+        self.current_return = function
+            .return_type
+            .as_ref()
+            .map(|ty| self.resolve_type(ty, function.span))
+            .unwrap_or_else(|| self.infer_function_return(function));
         if let Some(class_name) = receiver {
             self.current_class = Some(class_name.to_string());
             self.define(
@@ -408,6 +451,7 @@ impl TypeChecker {
 
         self.current_return = previous_return;
         self.current_class = previous_class;
+        self.generic_params.pop();
         self.exit_scope();
     }
 
@@ -545,6 +589,13 @@ impl TypeChecker {
                 self.error(
                     *span,
                     "unless should be desugared before type checking".to_string(),
+                );
+                Ty::Unknown
+            }
+            Expr::Match { span, .. } => {
+                self.error(
+                    *span,
+                    "match should be desugared before type checking".to_string(),
                 );
                 Ty::Unknown
             }
@@ -743,6 +794,24 @@ impl TypeChecker {
                     "pipeline should be desugared before type checking".to_string(),
                 );
                 Ty::Unknown
+            }
+            Expr::EnumVariant {
+                enum_name,
+                variant_name,
+                span,
+            } => {
+                if let Some(variants) = self.enums.get(enum_name) {
+                    if !variants.contains(variant_name) {
+                        self.error(
+                            *span,
+                            format!("enum '{}' has no variant '{}'", enum_name, variant_name),
+                        );
+                    }
+                    Ty::Enum(enum_name.clone())
+                } else {
+                    self.error(*span, format!("unknown enum '{}'", enum_name));
+                    Ty::Unknown
+                }
             }
             Expr::Property { object, name, span } => {
                 let object_ty = self.check_expr(object);
@@ -999,6 +1068,20 @@ impl TypeChecker {
 
     fn check_binary(&mut self, op: BinaryOp, left: Ty, right: Ty, span: Span) -> Ty {
         match op {
+            BinaryOp::And | BinaryOp::Or => {
+                if left == Ty::Bool && right == Ty::Bool {
+                    Ty::Bool
+                } else {
+                    self.error(
+                        span,
+                        format!(
+                            "logical operator expects Bool/Bool operands, got {:?} and {:?}",
+                            left, right
+                        ),
+                    );
+                    Ty::Unknown
+                }
+            }
             BinaryOp::Add => {
                 if left == Ty::String && right == Ty::String {
                     return Ty::String;
@@ -1184,6 +1267,20 @@ impl TypeChecker {
             TypeExpr::String => Ty::String,
             TypeExpr::Bool => Ty::Bool,
             TypeExpr::Void => Ty::Void,
+            TypeExpr::Applied { name, args } => {
+                if name == "Option" {
+                    if args.len() != 1 {
+                        self.error(span, "Option expects exactly one type argument".to_string());
+                        Ty::Unknown
+                    } else {
+                        Ty::Option(Box::new(self.resolve_type(&args[0], span)))
+                    }
+                } else if self.classes.contains_key(name) {
+                    Ty::Instance(name.clone())
+                } else {
+                    Ty::Unknown
+                }
+            }
             TypeExpr::Option(inner) => Ty::Option(Box::new(self.resolve_type(inner, span))),
             TypeExpr::Array { element, len } => {
                 Ty::Array(Box::new(self.resolve_type(element, span)), *len)
@@ -1198,6 +1295,15 @@ impl TypeChecker {
             TypeExpr::Named(name) => {
                 if self.classes.contains_key(name) {
                     Ty::Instance(name.clone())
+                } else if self.enums.contains_key(name) {
+                    Ty::Enum(name.clone())
+                } else if self
+                    .generic_params
+                    .iter()
+                    .rev()
+                    .any(|params| params.contains(name))
+                {
+                    Ty::Unknown
                 } else {
                     self.error(span, format!("unknown type '{}'", name));
                     Ty::Unknown
@@ -1207,13 +1313,128 @@ impl TypeChecker {
     }
 
     fn function_sig(&mut self, function: &FunctionDecl) -> Ty {
+        let params_scope: HashSet<String> = function.type_params.iter().cloned().collect();
+        self.generic_params.push(params_scope);
         let params = function
             .params
             .iter()
             .map(|param| self.resolve_type(&param.ty, param.span))
             .collect::<Vec<_>>();
-        let ret = self.resolve_type(&function.return_type, function.span);
+        let ret = function
+            .return_type
+            .as_ref()
+            .map(|ty| self.resolve_type(ty, function.span))
+            .unwrap_or_else(|| self.infer_function_return(function));
+        self.generic_params.pop();
         Ty::Function(params, Box::new(ret))
+    }
+
+    fn infer_function_return(&mut self, function: &FunctionDecl) -> Ty {
+        let mut candidates = Vec::new();
+        self.collect_return_types_from_block(&function.body, &mut candidates);
+        if let Some(tail) = &function.body.tail {
+            candidates.push(self.infer_expr_type_static(tail));
+        }
+
+        if candidates.is_empty() {
+            return Ty::Void;
+        }
+
+        let mut inferred = candidates[0].clone();
+        for ty in candidates.into_iter().skip(1) {
+            if !self.ty_compatible(&inferred, &ty) {
+                return Ty::Unknown;
+            }
+            if inferred == Ty::Unknown {
+                inferred = ty;
+            }
+        }
+        inferred
+    }
+
+    fn collect_return_types_from_block(&mut self, block: &BlockExpr, out: &mut Vec<Ty>) {
+        for stmt in &block.statements {
+            self.collect_return_types_from_stmt(stmt, out);
+        }
+    }
+
+    fn collect_return_types_from_stmt(&mut self, stmt: &Stmt, out: &mut Vec<Ty>) {
+        match stmt {
+            Stmt::Return { value, .. } => {
+                let ty = value
+                    .as_ref()
+                    .map(|expr| self.infer_expr_type_static(expr))
+                    .unwrap_or(Ty::Void);
+                out.push(ty);
+            }
+            Stmt::While { body, .. } => self.collect_return_types_from_block(body, out),
+            Stmt::Expression {
+                expr: Expr::Block(block),
+                ..
+            } => self.collect_return_types_from_block(block, out),
+            Stmt::Expression {
+                expr:
+                    Expr::If {
+                        then_branch,
+                        else_branch,
+                        ..
+                    },
+                ..
+            } => {
+                self.collect_return_types_from_block(then_branch, out);
+                self.collect_return_types_from_block(else_branch, out);
+            }
+            _ => {}
+        }
+    }
+
+    fn infer_expr_type_static(&mut self, expr: &Expr) -> Ty {
+        match expr {
+            Expr::Int(..) => Ty::Int,
+            Expr::Float(..) => Ty::Float,
+            Expr::Bool(..) => Ty::Bool,
+            Expr::String(..) | Expr::StringInterpolation { .. } => Ty::String,
+            Expr::EnumVariant { enum_name, .. } => Ty::Enum(enum_name.clone()),
+            Expr::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                let then_ty = then_branch
+                    .tail
+                    .as_ref()
+                    .map(|expr| self.infer_expr_type_static(expr))
+                    .unwrap_or(Ty::Void);
+                let else_ty = else_branch
+                    .tail
+                    .as_ref()
+                    .map(|expr| self.infer_expr_type_static(expr))
+                    .unwrap_or(Ty::Void);
+                if self.ty_compatible(&then_ty, &else_ty) {
+                    then_ty
+                } else {
+                    Ty::Unknown
+                }
+            }
+            Expr::Block(block) => block
+                .tail
+                .as_ref()
+                .map(|expr| self.infer_expr_type_static(expr))
+                .unwrap_or(Ty::Void),
+            Expr::Call { callee, .. } => {
+                if let Expr::Variable(name, _) = callee.as_ref() {
+                    if let Some(Symbol {
+                        ty: Ty::Function(_, ret),
+                        ..
+                    }) = self.lookup_symbol(name)
+                    {
+                        return (*ret).clone();
+                    }
+                }
+                Ty::Unknown
+            }
+            _ => Ty::Unknown,
+        }
     }
 
     fn define(&mut self, name: String, symbol: Symbol, span: Span) {

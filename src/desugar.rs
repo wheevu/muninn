@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    AssignTarget, BinaryOp, BlockExpr, Expr, InterpolationPart, Param, Program, Stmt, TypeExpr,
-    UnaryOp,
+    AssignTarget, BinaryOp, BlockExpr, Expr, InterpolationPart, MatchArm, MatchPattern, Param,
+    Program, Stmt, TypeExpr, UnaryOp,
 };
 use crate::error::MuninnError;
 use crate::span::Span;
@@ -18,8 +18,10 @@ struct Desugarer {
     value_scopes: Vec<HashMap<String, TypeExpr>>,
     class_field_types: HashMap<String, HashMap<String, TypeExpr>>,
     class_grid_widths: HashMap<String, HashMap<String, usize>>,
+    enum_variants: HashMap<String, HashMap<String, i64>>,
+    enum_variant_values: HashMap<String, i64>,
     current_class: Vec<String>,
-    function_returns: Vec<TypeExpr>,
+    function_returns: Vec<Option<TypeExpr>>,
 }
 
 impl Desugarer {
@@ -30,6 +32,8 @@ impl Desugarer {
             value_scopes: vec![HashMap::new()],
             class_field_types: HashMap::new(),
             class_grid_widths: HashMap::new(),
+            enum_variants: HashMap::new(),
+            enum_variant_values: HashMap::new(),
             current_class: Vec::new(),
             function_returns: Vec::new(),
         }
@@ -92,7 +96,7 @@ impl Desugarer {
                         .expect("scope")
                         .insert(name.clone(), ty.clone());
                 }
-                function.return_type = self.desugar_type(function.return_type);
+                function.return_type = function.return_type.map(|ty| self.desugar_type(ty));
                 self.function_returns.push(function.return_type.clone());
                 function.body = self.desugar_block(function.body)?;
                 self.function_returns.pop();
@@ -143,7 +147,7 @@ impl Desugarer {
                             .expect("scope")
                             .insert(param.name.clone(), param.ty.clone());
                     }
-                    method.return_type = self.desugar_type(method.return_type.clone());
+                    method.return_type = method.return_type.clone().map(|ty| self.desugar_type(ty));
                     self.function_returns.push(method.return_type.clone());
                     method.body = self.desugar_block(method.body.clone())?;
                     self.function_returns.pop();
@@ -168,7 +172,7 @@ impl Desugarer {
                             .expect("scope")
                             .insert(param.name.clone(), param.ty.clone());
                     }
-                    init.return_type = self.desugar_type(init.return_type.clone());
+                    init.return_type = init.return_type.clone().map(|ty| self.desugar_type(ty));
                     self.function_returns.push(init.return_type.clone());
                     init.body = self.desugar_block(init.body.clone())?;
                     self.function_returns.pop();
@@ -178,10 +182,22 @@ impl Desugarer {
                 self.current_class.pop();
                 Ok(Stmt::Class(class))
             }
+            Stmt::Enum(decl) => {
+                let mut variants = HashMap::new();
+                for (index, variant) in decl.variants.iter().enumerate() {
+                    variants.insert(variant.clone(), index as i64);
+                    self.enum_variant_values
+                        .insert(variant.clone(), index as i64);
+                }
+                self.enum_variants.insert(decl.name.clone(), variants);
+                Ok(Stmt::Enum(decl))
+            }
             Stmt::Return { value, span } => {
                 let value = value.map(|expr| self.desugar_expr(expr)).transpose()?;
                 Ok(Stmt::Return { value, span })
             }
+            Stmt::Break { span } => Ok(Stmt::Break { span }),
+            Stmt::Continue { span } => Ok(Stmt::Continue { span }),
             Stmt::While {
                 condition,
                 body,
@@ -219,7 +235,7 @@ impl Desugarer {
 
         let start_expr = self.desugar_expr(start)?;
         let end_expr = self.desugar_expr(end)?;
-        let mut body_block = self.desugar_block(body)?;
+        let body_block = self.desugar_block(body)?;
 
         let increment = Expr::Assign {
             target: AssignTarget::Variable(var_name.clone(), span),
@@ -231,18 +247,23 @@ impl Desugarer {
             }),
             span,
         };
-        body_block.statements.push(Stmt::Expression {
-            expr: increment,
-            span,
-        });
 
-        let while_stmt = Stmt::While {
-            condition: Expr::Binary {
+        let condition = Expr::Block(BlockExpr {
+            statements: vec![Stmt::Expression {
+                expr: increment,
+                span,
+            }],
+            tail: Some(Box::new(Expr::Binary {
                 left: Box::new(Expr::Variable(var_name.clone(), span)),
                 op: BinaryOp::Less,
                 right: Box::new(Expr::Variable(end_name.clone(), span)),
                 span,
-            },
+            })),
+            span,
+        });
+
+        let while_stmt = Stmt::While {
+            condition,
             body: body_block,
             span,
         };
@@ -267,7 +288,12 @@ impl Desugarer {
                     name: var_name,
                     mutable: true,
                     ty: Some(TypeExpr::Int),
-                    initializer: Expr::Variable(start_name, span),
+                    initializer: Expr::Binary {
+                        left: Box::new(Expr::Variable(start_name, span)),
+                        op: BinaryOp::Subtract,
+                        right: Box::new(Expr::Int(1, span)),
+                        span,
+                    },
                     span,
                 },
                 while_stmt,
@@ -383,6 +409,11 @@ impl Desugarer {
                     span,
                 })
             }
+            Expr::Match {
+                scrutinee,
+                arms,
+                span,
+            } => self.desugar_match(*scrutinee, arms, span),
             Expr::Call { callee, args, span } => {
                 let callee = self.desugar_expr(*callee)?;
                 let args = args
@@ -519,8 +550,142 @@ impl Desugarer {
                     span,
                 })
             }
+            Expr::EnumVariant {
+                enum_name,
+                variant_name,
+                span,
+            } => Ok(Expr::Int(
+                self.resolve_enum_variant_value(Some(&enum_name), &variant_name, span)?,
+                span,
+            )),
             Expr::Try { expr, span } => self.desugar_try(*expr, span),
             Expr::StringInterpolation { parts, span } => self.desugar_interpolation(parts, span),
+        }
+    }
+
+    fn desugar_match(
+        &mut self,
+        scrutinee: Expr,
+        arms: Vec<MatchArm>,
+        span: Span,
+    ) -> Result<Expr, MuninnError> {
+        if arms.is_empty() {
+            return Err(MuninnError::new(
+                "desugar",
+                "match expression requires at least one arm",
+                span,
+            ));
+        }
+
+        let scrutinee_name = format!("__match_{}", self.next_temp_id());
+        let scrutinee_var = Expr::Variable(scrutinee_name.clone(), span);
+        let lowered_scrutinee = self.desugar_expr(scrutinee)?;
+
+        let mut current = None;
+        for arm in arms.into_iter().rev() {
+            let lowered_expr = self.desugar_expr(arm.expr)?;
+            current = Some(match arm.pattern {
+                MatchPattern::Wildcard => lowered_expr,
+                pattern => {
+                    let pattern_expr = self.desugar_match_pattern(pattern, arm.span)?;
+                    let condition = Expr::Binary {
+                        left: Box::new(scrutinee_var.clone()),
+                        op: BinaryOp::Equal,
+                        right: Box::new(pattern_expr),
+                        span: arm.span,
+                    };
+                    let else_expr = current.clone().ok_or_else(|| {
+                        MuninnError::new(
+                            "desugar",
+                            "non-exhaustive match requires a wildcard arm",
+                            arm.span,
+                        )
+                    })?;
+                    Expr::If {
+                        condition: Box::new(condition),
+                        then_branch: Self::expr_as_block(lowered_expr, arm.span),
+                        else_branch: Self::expr_as_block(else_expr, arm.span),
+                        span: arm.span,
+                    }
+                }
+            });
+        }
+
+        let body = current.expect("at least one arm");
+        Ok(Expr::Block(BlockExpr {
+            statements: vec![Stmt::Let {
+                name: scrutinee_name,
+                mutable: false,
+                ty: Some(TypeExpr::Int),
+                initializer: lowered_scrutinee,
+                span,
+            }],
+            tail: Some(Box::new(body)),
+            span,
+        }))
+    }
+
+    fn desugar_match_pattern(
+        &self,
+        pattern: MatchPattern,
+        span: Span,
+    ) -> Result<Expr, MuninnError> {
+        match pattern {
+            MatchPattern::EnumVariant {
+                enum_name,
+                variant_name,
+            } => Ok(Expr::Int(
+                self.resolve_enum_variant_value(Some(&enum_name), &variant_name, span)?,
+                span,
+            )),
+            MatchPattern::Variant(variant_name) => Ok(Expr::Int(
+                self.resolve_enum_variant_value(None, &variant_name, span)?,
+                span,
+            )),
+            MatchPattern::Wildcard => Err(MuninnError::new(
+                "desugar",
+                "wildcard pattern should be handled before lowering",
+                span,
+            )),
+        }
+    }
+
+    fn resolve_enum_variant_value(
+        &self,
+        enum_name: Option<&str>,
+        variant_name: &str,
+        span: Span,
+    ) -> Result<i64, MuninnError> {
+        if let Some(name) = enum_name {
+            let variants = self.enum_variants.get(name).ok_or_else(|| {
+                MuninnError::new("desugar", format!("unknown enum '{}'", name), span)
+            })?;
+            return variants.get(variant_name).copied().ok_or_else(|| {
+                MuninnError::new(
+                    "desugar",
+                    format!("enum '{}' has no variant '{}'", name, variant_name),
+                    span,
+                )
+            });
+        }
+
+        self.enum_variant_values
+            .get(variant_name)
+            .copied()
+            .ok_or_else(|| {
+                MuninnError::new(
+                    "desugar",
+                    format!("unknown enum variant '{}'", variant_name),
+                    span,
+                )
+            })
+    }
+
+    fn expr_as_block(expr: Expr, span: Span) -> BlockExpr {
+        BlockExpr {
+            statements: Vec::new(),
+            tail: Some(Box::new(expr)),
+            span,
         }
     }
 
@@ -533,7 +698,7 @@ impl Desugarer {
             ));
         };
 
-        let TypeExpr::Option(inner_ty) = current_return else {
+        let Some(TypeExpr::Option(inner_ty)) = current_return else {
             return Err(MuninnError::new(
                 "desugar",
                 "'?' requires the enclosing function to return Option[T]",
@@ -649,6 +814,10 @@ impl Desugarer {
                 len,
             },
             TypeExpr::Option(inner) => TypeExpr::Option(Box::new(self.desugar_type(*inner))),
+            TypeExpr::Applied { name, args } => TypeExpr::Applied {
+                name,
+                args: args.into_iter().map(|arg| self.desugar_type(arg)).collect(),
+            },
             TypeExpr::Grid {
                 element,
                 width,
@@ -863,12 +1032,10 @@ mod tests {
             panic!("for loop should lower into block expression")
         };
 
-        assert!(
-            block
-                .statements
-                .iter()
-                .any(|stmt| matches!(stmt, Stmt::While { .. }))
-        );
+        assert!(block
+            .statements
+            .iter()
+            .any(|stmt| matches!(stmt, Stmt::While { .. })));
     }
 
     #[test]

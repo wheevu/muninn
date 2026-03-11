@@ -100,8 +100,22 @@ impl<'a> Lexer<'a> {
             '|' => {
                 if self.match_char('>') {
                     TokenKind::PipeGreater
+                } else if self.match_char('|') {
+                    TokenKind::OrOr
                 } else {
                     TokenKind::Pipe
+                }
+            }
+            '&' => {
+                if self.match_char('&') {
+                    TokenKind::AndAnd
+                } else {
+                    self.errors.push(MuninnError::new(
+                        "lexer",
+                        "unexpected character '&' (did you mean '&&'?)",
+                        self.span(),
+                    ));
+                    return None;
                 }
             }
             '!' => {
@@ -114,6 +128,8 @@ impl<'a> Lexer<'a> {
             '=' => {
                 if self.match_char('=') {
                     TokenKind::EqualEqual
+                } else if self.match_char('>') {
+                    TokenKind::FatArrow
                 } else {
                     TokenKind::Equal
                 }
@@ -239,6 +255,10 @@ impl<'a> Lexer<'a> {
             "while" => TokenKind::While,
             "for" => TokenKind::For,
             "in" => TokenKind::In,
+            "break" => TokenKind::Break,
+            "continue" => TokenKind::Continue,
+            "enum" => TokenKind::Enum,
+            "match" => TokenKind::Match,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             "init" => TokenKind::Init,
@@ -333,11 +353,9 @@ mod tests {
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::For)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::In)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::DotDot)));
-        assert!(
-            tokens
-                .iter()
-                .any(|t| matches!(t.kind, TokenKind::PipeGreater))
-        );
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t.kind, TokenKind::PipeGreater)));
     }
 
     #[test]
@@ -354,10 +372,8 @@ mod tests {
     fn lexes_question_operator() {
         let source = "maybe()?;";
         let tokens = Lexer::new(source).lex().expect("tokens");
-        assert!(
-            tokens
-                .iter()
-                .any(|token| matches!(token.kind, TokenKind::Question))
-        );
+        assert!(tokens
+            .iter()
+            .any(|token| matches!(token.kind, TokenKind::Question)));
     }
 }

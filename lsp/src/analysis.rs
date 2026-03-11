@@ -280,7 +280,7 @@ impl Builder {
                         DefKind::Function,
                         function.span,
                         detail,
-                        class_hint_from_type_expr(&function.return_type),
+                        class_hint_from_optional_type_expr(&function.return_type),
                     );
                 }
                 Stmt::Class(class) => {
@@ -366,7 +366,7 @@ impl Builder {
                             function.span,
                             format_function_signature(function),
                             container,
-                            class_hint_from_type_expr(&function.return_type),
+                            class_hint_from_optional_type_expr(&function.return_type),
                         )
                     });
                 self.visit_function(function, id, None);
@@ -388,6 +388,7 @@ impl Builder {
                 self.class_ids.insert(class.name.clone(), class_id);
                 self.visit_class(class, class_id);
             }
+            Stmt::Enum(_) | Stmt::Break { .. } | Stmt::Continue { .. } => {}
             Stmt::Return { value, .. } => {
                 if let Some(value) = value {
                     self.visit_expr(value);
@@ -471,7 +472,7 @@ impl Builder {
                 method.span,
                 format_function_signature(method),
                 Some(class_id),
-                class_hint_from_type_expr(&method.return_type),
+                class_hint_from_optional_type_expr(&method.return_type),
             );
             self.class_members
                 .entry(class.name.clone())
@@ -569,12 +570,21 @@ impl Builder {
                     self.visit_block(else_branch, None);
                 }
             }
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                self.visit_expr(scrutinee);
+                for arm in arms {
+                    self.visit_expr(&arm.expr);
+                }
+            }
             Expr::Call { callee, args, .. } => {
                 self.visit_expr(callee);
                 for arg in args {
                     self.visit_expr(arg);
                 }
             }
+            Expr::EnumVariant { .. } => {}
             Expr::Pipeline {
                 lhs, callee, args, ..
             } => {
@@ -844,6 +854,14 @@ fn format_type_expr(ty: &TypeExpr) -> String {
         TypeExpr::Bool => "Bool".to_string(),
         TypeExpr::Void => "Void".to_string(),
         TypeExpr::Named(name) => name.clone(),
+        TypeExpr::Applied { name, args } => {
+            let rendered = args
+                .iter()
+                .map(format_type_expr)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{}<{}>", name, rendered)
+        }
         TypeExpr::Option(inner) => format!("Option[{}]", format_type_expr(inner)),
         TypeExpr::Array { element, len } => format!("{}[{}]", format_type_expr(element), len),
         TypeExpr::Grid {
@@ -859,6 +877,10 @@ fn class_hint_from_type_expr(ty: &TypeExpr) -> Option<String> {
         TypeExpr::Named(name) => Some(name.clone()),
         _ => None,
     }
+}
+
+fn class_hint_from_optional_type_expr(ty: &Option<TypeExpr>) -> Option<String> {
+    ty.as_ref().and_then(class_hint_from_type_expr)
 }
 
 fn infer_type_detail(expr: &Expr) -> Option<String> {
@@ -907,12 +929,10 @@ fn format_function_signature(function: &FunctionDecl) -> String {
         .map(|param| format!("{}: {}", param.name, format_type_expr(&param.ty)))
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
-        "fn {}({}) -> {}",
-        function.name,
-        params,
-        format_type_expr(&function.return_type)
-    )
+    match &function.return_type {
+        Some(ty) => format!("fn {}({}) -> {}", function.name, params, format_type_expr(ty)),
+        None => format!("fn {}({})", function.name, params),
+    }
 }
 
 pub fn markdown_for_symbol(symbol: &SymbolDef) -> String {

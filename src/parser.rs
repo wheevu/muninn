@@ -1,6 +1,6 @@
 use crate::ast::{
-    AssignTarget, BinaryOp, BlockExpr, ClassDecl, Expr, FieldDecl, FunctionDecl, InterpolationPart,
-    Param, Program, Stmt, TypeExpr, UnaryOp,
+    AssignTarget, BinaryOp, BlockExpr, ClassDecl, EnumDecl, Expr, FieldDecl, FunctionDecl,
+    InterpolationPart, MatchArm, MatchPattern, Param, Program, Stmt, TypeExpr, UnaryOp,
 };
 use crate::error::MuninnError;
 use crate::lexer::Lexer;
@@ -47,6 +47,9 @@ impl Parser {
         if self.match_where(|k| matches!(k, TokenKind::Class)) {
             return Ok(Stmt::Class(self.parse_class_decl()?));
         }
+        if self.match_where(|k| matches!(k, TokenKind::Enum)) {
+            return Ok(Stmt::Enum(self.parse_enum_decl()?));
+        }
         self.parse_statement()
     }
 
@@ -90,6 +93,7 @@ impl Parser {
         };
 
         let span = self.previous().span;
+        let type_params = self.parse_type_params_opt()?;
         self.consume_where(
             |k| matches!(k, TokenKind::LeftParen),
             "expected '(' after function name",
@@ -123,17 +127,18 @@ impl Parser {
         )?;
 
         let return_type = if self.match_where(|k| matches!(k, TokenKind::Arrow)) {
-            self.parse_type_expr()?
+            Some(self.parse_type_expr()?)
         } else if name == "init" {
-            TypeExpr::Void
+            Some(TypeExpr::Void)
         } else {
-            TypeExpr::Void
+            None
         };
 
         let body = self.parse_block_expr()?;
 
         Ok(FunctionDecl {
             name,
+            type_params,
             params,
             return_type,
             body,
@@ -144,6 +149,7 @@ impl Parser {
     fn parse_class_decl(&mut self) -> Result<ClassDecl, MuninnError> {
         let name = self.consume_identifier("expected class name")?;
         let span = self.previous().span;
+        let type_params = self.parse_type_params_opt()?;
         self.consume_where(
             |k| matches!(k, TokenKind::LeftBrace),
             "expected '{' after class name",
@@ -198,9 +204,38 @@ impl Parser {
 
         Ok(ClassDecl {
             name,
+            type_params,
             fields,
             methods,
             init,
+            span,
+        })
+    }
+
+    fn parse_enum_decl(&mut self) -> Result<EnumDecl, MuninnError> {
+        let name = self.consume_identifier("expected enum name")?;
+        let span = self.previous().span;
+        self.consume_where(
+            |k| matches!(k, TokenKind::LeftBrace),
+            "expected '{' after enum name",
+        )?;
+
+        let mut variants = Vec::new();
+        while !self.check_where(|k| matches!(k, TokenKind::RightBrace)) && !self.is_at_end() {
+            variants.push(self.consume_identifier("expected enum variant name")?);
+            if !self.match_where(|k| matches!(k, TokenKind::Comma)) {
+                break;
+            }
+        }
+
+        self.consume_where(
+            |k| matches!(k, TokenKind::RightBrace),
+            "expected '}' after enum declaration",
+        )?;
+
+        Ok(EnumDecl {
+            name,
+            variants,
             span,
         })
     }
@@ -218,6 +253,24 @@ impl Parser {
                 "expected ';' after return value",
             )?;
             return Ok(Stmt::Return { value, span });
+        }
+
+        if self.match_where(|k| matches!(k, TokenKind::Break)) {
+            let span = self.previous().span;
+            self.consume_where(
+                |k| matches!(k, TokenKind::Semicolon),
+                "expected ';' after break",
+            )?;
+            return Ok(Stmt::Break { span });
+        }
+
+        if self.match_where(|k| matches!(k, TokenKind::Continue)) {
+            let span = self.previous().span;
+            self.consume_where(
+                |k| matches!(k, TokenKind::Semicolon),
+                "expected ';' after continue",
+            )?;
+            return Ok(Stmt::Continue { span });
         }
 
         if self.match_where(|k| matches!(k, TokenKind::While)) {
@@ -319,7 +372,7 @@ impl Parser {
     }
 
     fn parse_pipeline(&mut self) -> Result<Expr, MuninnError> {
-        let mut expr = self.parse_equality()?;
+        let mut expr = self.parse_or()?;
         while self.match_where(|k| matches!(k, TokenKind::PipeGreater)) {
             let span = expr.span();
             let rhs = self.parse_call()?;
@@ -331,6 +384,36 @@ impl Parser {
                 lhs: Box::new(expr),
                 callee,
                 args,
+                span,
+            };
+        }
+        Ok(expr)
+    }
+
+    fn parse_or(&mut self) -> Result<Expr, MuninnError> {
+        let mut expr = self.parse_and()?;
+        while self.match_where(|k| matches!(k, TokenKind::OrOr)) {
+            let right = self.parse_and()?;
+            let span = expr.span();
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op: BinaryOp::Or,
+                right: Box::new(right),
+                span,
+            };
+        }
+        Ok(expr)
+    }
+
+    fn parse_and(&mut self) -> Result<Expr, MuninnError> {
+        let mut expr = self.parse_equality()?;
+        while self.match_where(|k| matches!(k, TokenKind::AndAnd)) {
+            let right = self.parse_equality()?;
+            let span = expr.span();
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op: BinaryOp::And,
+                right: Box::new(right),
                 span,
             };
         }
@@ -475,10 +558,19 @@ impl Parser {
             if self.match_where(|k| matches!(k, TokenKind::Dot)) {
                 let name = self.consume_identifier("expected property name after '.'")?;
                 let span = self.previous().span;
-                expr = Expr::Property {
-                    object: Box::new(expr),
-                    name,
-                    span,
+                expr = match expr {
+                    Expr::Variable(enum_name, _) if starts_with_uppercase(&enum_name) => {
+                        Expr::EnumVariant {
+                            enum_name,
+                            variant_name: name,
+                            span,
+                        }
+                    }
+                    other => Expr::Property {
+                        object: Box::new(other),
+                        name,
+                        span,
+                    },
                 };
                 continue;
             }
@@ -560,6 +652,7 @@ impl Parser {
             }
             TokenKind::If => self.parse_if_expression(token.span),
             TokenKind::Unless => self.parse_unless_expression(token.span),
+            TokenKind::Match => self.parse_match_expression(token.span),
             TokenKind::LeftBracket => {
                 let mut items = Vec::new();
                 if !self.check_where(|k| matches!(k, TokenKind::RightBracket)) {
@@ -581,6 +674,69 @@ impl Parser {
                 "expected expression",
                 token.span,
             )),
+        }
+    }
+
+    fn parse_match_expression(&mut self, span: Span) -> Result<Expr, MuninnError> {
+        self.consume_where(
+            |k| matches!(k, TokenKind::LeftParen),
+            "expected '(' after match",
+        )?;
+        let scrutinee = self.parse_expression()?;
+        self.consume_where(
+            |k| matches!(k, TokenKind::RightParen),
+            "expected ')' after match scrutinee",
+        )?;
+        self.consume_where(
+            |k| matches!(k, TokenKind::LeftBrace),
+            "expected '{' to start match arms",
+        )?;
+
+        let mut arms = Vec::new();
+        while !self.check_where(|k| matches!(k, TokenKind::RightBrace)) && !self.is_at_end() {
+            let pattern = self.parse_match_pattern()?;
+            let arm_span = self.previous().span;
+            self.consume_where(
+                |k| matches!(k, TokenKind::FatArrow),
+                "expected '=>' after match pattern",
+            )?;
+            let expr = self.parse_expression()?;
+            arms.push(MatchArm {
+                pattern,
+                expr,
+                span: arm_span,
+            });
+            if !self.match_where(|k| matches!(k, TokenKind::Comma)) {
+                break;
+            }
+        }
+
+        self.consume_where(
+            |k| matches!(k, TokenKind::RightBrace),
+            "expected '}' after match arms",
+        )?;
+
+        Ok(Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
+            span,
+        })
+    }
+
+    fn parse_match_pattern(&mut self) -> Result<MatchPattern, MuninnError> {
+        if self.match_where(|k| matches!(k, TokenKind::Identifier(name) if name == "_")) {
+            return Ok(MatchPattern::Wildcard);
+        }
+
+        let first = self.consume_identifier("expected match pattern")?;
+        if self.match_where(|k| matches!(k, TokenKind::Dot)) {
+            let second = self.consume_identifier("expected enum variant after '.'")?;
+            Ok(MatchPattern::EnumVariant {
+                enum_name: first,
+                variant_name: second,
+            })
+        } else {
+            Ok(MatchPattern::Variant(first))
         }
     }
 
@@ -642,11 +798,21 @@ impl Parser {
         let mut tail = None;
 
         while !self.check_where(|k| matches!(k, TokenKind::RightBrace)) && !self.is_at_end() {
-            if self.check_where(|k| matches!(k, TokenKind::Let | TokenKind::Fn | TokenKind::Class))
-                || self.check_where(|k| {
-                    matches!(k, TokenKind::Return | TokenKind::While | TokenKind::For)
-                })
-            {
+            if self.check_where(|k| {
+                matches!(
+                    k,
+                    TokenKind::Let | TokenKind::Fn | TokenKind::Class | TokenKind::Enum
+                )
+            }) || self.check_where(|k| {
+                matches!(
+                    k,
+                    TokenKind::Return
+                        | TokenKind::While
+                        | TokenKind::For
+                        | TokenKind::Break
+                        | TokenKind::Continue
+                )
+            }) {
                 statements.push(self.parse_declaration()?);
                 continue;
             }
@@ -691,7 +857,7 @@ impl Parser {
             }
         }
 
-        let base = match &self.peek().kind {
+        let mut base = match &self.peek().kind {
             TokenKind::TypeInt => {
                 self.advance();
                 TypeExpr::Int
@@ -726,6 +892,28 @@ impl Parser {
             }
         };
 
+        if let TypeExpr::Named(name) = &base {
+            if self.match_where(|k| matches!(k, TokenKind::Less)) {
+                let mut args = Vec::new();
+                if !self.check_where(|k| matches!(k, TokenKind::Greater)) {
+                    loop {
+                        args.push(self.parse_type_expr()?);
+                        if !self.match_where(|k| matches!(k, TokenKind::Comma)) {
+                            break;
+                        }
+                    }
+                }
+                self.consume_where(
+                    |k| matches!(k, TokenKind::Greater),
+                    "expected '>' after generic type arguments",
+                )?;
+                base = TypeExpr::Applied {
+                    name: name.clone(),
+                    args,
+                };
+            }
+        }
+
         if !self.match_where(|k| matches!(k, TokenKind::LeftBracket)) {
             return Ok(base);
         }
@@ -752,6 +940,35 @@ impl Parser {
                 len: first,
             })
         }
+    }
+
+    fn parse_type_params_opt(&mut self) -> Result<Vec<String>, MuninnError> {
+        let mut params = Vec::new();
+        if !self.match_where(|k| matches!(k, TokenKind::Less)) {
+            return Ok(params);
+        }
+
+        if self.check_where(|k| matches!(k, TokenKind::Greater)) {
+            return Err(MuninnError::new(
+                "parser",
+                "generic parameter list cannot be empty",
+                self.peek().span,
+            ));
+        }
+
+        loop {
+            params.push(self.consume_identifier("expected generic type parameter")?);
+            if !self.match_where(|k| matches!(k, TokenKind::Comma)) {
+                break;
+            }
+        }
+
+        self.consume_where(
+            |k| matches!(k, TokenKind::Greater),
+            "expected '>' after generic type parameters",
+        )?;
+
+        Ok(params)
     }
 
     fn parse_string_primary(&self, text: String, span: Span) -> Result<Expr, MuninnError> {
@@ -931,9 +1148,12 @@ impl Parser {
                 TokenKind::Class
                     | TokenKind::Fn
                     | TokenKind::Let
+                    | TokenKind::Enum
                     | TokenKind::Return
                     | TokenKind::While
                     | TokenKind::For
+                    | TokenKind::Break
+                    | TokenKind::Continue
                     | TokenKind::RightBrace
             ) {
                 return;
@@ -942,6 +1162,12 @@ impl Parser {
             self.advance();
         }
     }
+}
+
+fn starts_with_uppercase(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_uppercase())
 }
 
 #[cfg(test)]
