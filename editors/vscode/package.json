@@ -1,7 +1,7 @@
 {
   "name": "muninn-language",
   "displayName": "Muninn Language Support",
-  "description": "Syntax highlighting and language tooling for Muninn (.mun)",
+  "description": "Thin VS Code integration for the Muninn language server",
   "version": "0.1.0",
   "publisher": "muninn",
   "license": "MIT",
@@ -43,7 +43,7 @@
         "muninn.serverPath": {
           "type": "string",
           "default": "",
-          "description": "Optional path to the muninn-lsp binary. If empty, the extension tries bundled binary, then PATH."
+          "description": "Optional path to the muninn-lsp binary. If empty, the extension tries target/debug in the workspace, then PATH."
         }
       }
     }
@@ -64,6 +64,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourname/muninn.git"
+    "url": "https://github.com/wheevu/muninn.git"
   }
 }

@@ -1,10 +1,10 @@
 use std::collections::HashMap;
-use std::rc::Rc;
+
+use crate::span::Span;
 
 #[derive(Debug, Clone)]
 pub struct BytecodeModule {
-    pub functions: Vec<Rc<FunctionBytecode>>,
-    pub classes: Vec<Rc<ClassBytecode>>,
+    pub functions: Vec<FunctionBytecode>,
     pub entry_function: usize,
 }
 
@@ -12,7 +12,6 @@ impl BytecodeModule {
     pub fn new() -> Self {
         Self {
             functions: Vec::new(),
-            classes: Vec::new(),
             entry_function: 0,
         }
     }
@@ -23,20 +22,14 @@ pub struct FunctionBytecode {
     pub name: String,
     pub arity: usize,
     pub local_count: usize,
+    pub expects_return_value: bool,
     pub chunk: Chunk,
-}
-
-#[derive(Debug, Clone)]
-pub struct ClassBytecode {
-    pub name: String,
-    pub fields: Vec<String>,
-    pub methods: HashMap<String, usize>,
-    pub init: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Chunk {
     pub code: Vec<u8>,
+    pub spans: Vec<Span>,
     pub constants: Vec<Constant>,
     constant_index: HashMap<ConstantKey, u16>,
 }
@@ -45,21 +38,27 @@ impl Chunk {
     pub fn new() -> Self {
         Self {
             code: Vec::new(),
+            spans: Vec::new(),
             constants: Vec::new(),
             constant_index: HashMap::new(),
         }
     }
 
-    pub fn write_op(&mut self, op: OpCode) {
+    pub fn write_op(&mut self, op: OpCode, span: Span) {
         self.code.push(op as u8);
+        self.spans.push(span);
     }
 
-    pub fn write_u8(&mut self, value: u8) {
+    pub fn write_u8(&mut self, value: u8, span: Span) {
         self.code.push(value);
+        self.spans.push(span);
     }
 
-    pub fn write_u16(&mut self, value: u16) {
-        self.code.extend_from_slice(&value.to_le_bytes());
+    pub fn write_u16(&mut self, value: u16, span: Span) {
+        for byte in value.to_le_bytes() {
+            self.code.push(byte);
+            self.spans.push(span);
+        }
     }
 
     pub fn add_constant(&mut self, constant: Constant) -> Result<u16, String> {
@@ -67,7 +66,6 @@ impl Chunk {
         if let Some(index) = self.constant_index.get(&key) {
             return Ok(*index);
         }
-
         if self.constants.len() >= u16::MAX as usize {
             return Err(format!(
                 "constant pool overflow: maximum of {} entries",
@@ -79,6 +77,10 @@ impl Chunk {
         self.constant_index.insert(key, index);
         Ok(index)
     }
+
+    pub fn span_at(&self, ip: usize) -> Span {
+        self.spans.get(ip).copied().unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -88,7 +90,6 @@ pub enum Constant {
     Bool(bool),
     String(String),
     Function(usize),
-    Class(usize),
     Nil,
 }
 
@@ -119,13 +120,6 @@ pub enum OpCode {
     Loop = 21,
     Call = 22,
     Return = 23,
-    BuildArray = 24,
-    BuildArrayNil = 25,
-    GetIndex = 26,
-    SetIndex = 27,
-    GetProperty = 28,
-    SetProperty = 29,
-    Invoke = 30,
 }
 
 impl OpCode {
@@ -155,13 +149,6 @@ impl OpCode {
             21 => Some(Self::Loop),
             22 => Some(Self::Call),
             23 => Some(Self::Return),
-            24 => Some(Self::BuildArray),
-            25 => Some(Self::BuildArrayNil),
-            26 => Some(Self::GetIndex),
-            27 => Some(Self::SetIndex),
-            28 => Some(Self::GetProperty),
-            29 => Some(Self::SetProperty),
-            30 => Some(Self::Invoke),
             _ => None,
         }
     }
@@ -174,7 +161,6 @@ enum ConstantKey {
     Bool(bool),
     String(String),
     Function(usize),
-    Class(usize),
     Nil,
 }
 
@@ -186,7 +172,6 @@ impl ConstantKey {
             Constant::Bool(value) => Self::Bool(*value),
             Constant::String(value) => Self::String(value.clone()),
             Constant::Function(value) => Self::Function(*value),
-            Constant::Class(value) => Self::Class(*value),
             Constant::Nil => Self::Nil,
         }
     }
@@ -205,7 +190,6 @@ mod tests {
         let second = chunk
             .add_constant(Constant::String("name".to_string()))
             .expect("second constant");
-
         assert_eq!(first, second);
         assert_eq!(chunk.constants.len(), 1);
     }

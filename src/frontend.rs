@@ -1,15 +1,14 @@
 use crate::ast::Program;
-use crate::desugar::desugar_program;
 use crate::error::MuninnError;
 use crate::lexer::Lexer;
-use crate::parser::Parser;
 use crate::token::Token;
-use crate::typecheck::{TypeContext, check_program};
+use crate::typecheck::{SemanticModel, analyze_program, check_program};
+use crate::parser::Parser;
 
 #[derive(Debug, Clone, Default)]
 pub struct FrontendAnalysis {
     pub parsed: Option<Program>,
-    pub type_context: Option<TypeContext>,
+    pub semantics: Option<SemanticModel>,
     pub diagnostics: Vec<MuninnError>,
 }
 
@@ -29,61 +28,27 @@ pub fn parse_document(source: &str) -> Result<Program, Vec<MuninnError>> {
     parser.parse_program()
 }
 
-pub fn check_document(program: &Program) -> Result<TypeContext, Vec<MuninnError>> {
+pub fn check_document(program: &Program) -> Result<SemanticModel, Vec<MuninnError>> {
     check_program(program)
 }
 
 pub fn analyze_document(source: &str) -> FrontendAnalysis {
-    let mut diagnostics = Vec::<MuninnError>::new();
-
-    let tokens = match lex_document(source) {
-        Ok(tokens) => tokens,
-        Err(errors) => {
-            diagnostics.extend(errors);
+    let parsed = match parse_document(source) {
+        Ok(program) => program,
+        Err(diagnostics) => {
             return FrontendAnalysis {
                 parsed: None,
-                type_context: None,
+                semantics: None,
                 diagnostics,
             };
         }
     };
 
-    let mut parser = Parser::new(tokens);
-    let parsed = match parser.parse_program() {
-        Ok(program) => program,
-        Err(errors) => {
-            diagnostics.extend(errors);
-            return FrontendAnalysis {
-                parsed: None,
-                type_context: None,
-                diagnostics,
-            };
-        }
-    };
-
-    let desugared = match desugar_program(parsed.clone()) {
-        Ok(program) => program,
-        Err(error) => {
-            diagnostics.push(error);
-            return FrontendAnalysis {
-                parsed: Some(parsed),
-                type_context: None,
-                diagnostics,
-            };
-        }
-    };
-
-    let type_context = match check_program(&desugared) {
-        Ok(context) => Some(context),
-        Err(errors) => {
-            diagnostics.extend(errors);
-            None
-        }
-    };
-
+    let semantics = analyze_program(&parsed);
+    let diagnostics = semantics.diagnostics.clone();
     FrontendAnalysis {
         parsed: Some(parsed),
-        type_context,
+        semantics: Some(semantics),
         diagnostics,
     }
 }

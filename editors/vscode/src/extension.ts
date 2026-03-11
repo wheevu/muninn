@@ -11,7 +11,7 @@ import {
 let client: LanguageClient | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const command = resolveServerPath(context);
+  const command = resolveServerPath();
   const serverOptions: ServerOptions = {
     run: {
       command,
@@ -51,7 +51,7 @@ export async function deactivate(): Promise<void> {
   client = undefined;
 }
 
-function resolveServerPath(context: vscode.ExtensionContext): string {
+function resolveServerPath(): string {
   const configured = vscode.workspace
     .getConfiguration("muninn")
     .get<string>("serverPath", "")
@@ -61,12 +61,6 @@ function resolveServerPath(context: vscode.ExtensionContext): string {
   }
 
   const executable = process.platform === "win32" ? "muninn-lsp.exe" : "muninn-lsp";
-
-  const bundled = context.asAbsolutePath(path.join("bin", executable));
-  if (fs.existsSync(bundled)) {
-    return bundled;
-  }
-
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (workspaceRoot) {
     const localBuild = path.join(workspaceRoot, "target", "debug", executable);
@@ -75,5 +69,5 @@ function resolveServerPath(context: vscode.ExtensionContext): string {
     }
   }
 
-  return "muninn-lsp";
+  return executable;
 }

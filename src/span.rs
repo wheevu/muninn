@@ -41,4 +41,25 @@ impl Span {
     pub const fn width(&self) -> usize {
         self.end_offset.saturating_sub(self.offset)
     }
+
+    pub fn contains_offset(&self, offset: usize) -> bool {
+        self.offset <= offset && offset < self.end_offset.max(self.offset + 1)
+    }
+
+    pub fn merge(self, other: Span) -> Span {
+        if self.line == 0 {
+            return other;
+        }
+        if other.line == 0 {
+            return self;
+        }
+        Span {
+            line: self.line,
+            column: self.column,
+            offset: self.offset,
+            end_line: other.end_line,
+            end_column: other.end_column,
+            end_offset: other.end_offset,
+        }
+    }
 }

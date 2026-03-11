@@ -1,30 +1,34 @@
 use crate::ast::{
-    AssignTarget, BinaryOp, BlockExpr, ClassDecl, EnumDecl, Expr, FieldDecl, FunctionDecl,
-    InterpolationPart, MatchArm, MatchPattern, Param, Program, Stmt, TypeExpr, UnaryOp,
+    BinaryOp, Block, Expr, ExprKind, FunctionDecl, NodeId, Param, Program, Stmt, StmtKind,
+    TypeExpr, UnaryOp,
 };
 use crate::error::MuninnError;
-use crate::lexer::Lexer;
-use crate::span::Span;
 use crate::token::{Token, TokenKind};
 
 pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
+    next_node_id: u32,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, current: 0 }
+        Self {
+            tokens,
+            current: 0,
+            next_node_id: 1,
+        }
     }
 
     pub fn parse_program(&mut self) -> Result<Program, Vec<MuninnError>> {
         let mut statements = Vec::new();
         let mut errors = Vec::new();
+
         while !self.is_at_end() {
-            match self.parse_declaration() {
+            match self.parse_top_level_statement() {
                 Ok(stmt) => statements.push(stmt),
-                Err(err) => {
-                    errors.push(err);
+                Err(error) => {
+                    errors.push(error);
                     self.synchronize();
                 }
             }
@@ -37,399 +41,237 @@ impl Parser {
         }
     }
 
-    fn parse_declaration(&mut self) -> Result<Stmt, MuninnError> {
-        if self.match_where(|k| matches!(k, TokenKind::Let)) {
-            return self.parse_let();
+    fn parse_top_level_statement(&mut self) -> Result<Stmt, MuninnError> {
+        if self.match_simple(TokenKind::Fn) {
+            return self.parse_function_statement();
         }
-        if self.match_where(|k| matches!(k, TokenKind::Fn)) {
-            return Ok(Stmt::Function(self.parse_function_decl(false)?));
-        }
-        if self.match_where(|k| matches!(k, TokenKind::Class)) {
-            return Ok(Stmt::Class(self.parse_class_decl()?));
-        }
-        if self.match_where(|k| matches!(k, TokenKind::Enum)) {
-            return Ok(Stmt::Enum(self.parse_enum_decl()?));
-        }
-        self.parse_statement()
+        self.parse_statement(false)
     }
 
-    fn parse_let(&mut self) -> Result<Stmt, MuninnError> {
-        let mutable = self.match_where(|k| matches!(k, TokenKind::Mut));
-        let name = self.consume_identifier("expected variable name after let")?;
-        let span = self.previous().span;
-        let ty = if self.match_where(|k| matches!(k, TokenKind::Colon)) {
-            Some(self.parse_type_expr()?)
-        } else {
-            None
-        };
-        self.consume_where(
-            |k| matches!(k, TokenKind::Equal),
-            "expected '=' after variable declaration",
-        )?;
-        let initializer = self.parse_expression()?;
-        self.consume_where(
-            |k| matches!(k, TokenKind::Semicolon),
-            "expected ';' after variable declaration",
-        )?;
-
-        Ok(Stmt::Let {
-            name,
-            mutable,
-            ty,
-            initializer,
-            span,
-        })
+    fn parse_statement(&mut self, inside_block: bool) -> Result<Stmt, MuninnError> {
+        if self.match_simple(TokenKind::Let) {
+            return self.parse_let_statement();
+        }
+        if self.match_simple(TokenKind::Return) {
+            return self.parse_return_statement();
+        }
+        if self.match_simple(TokenKind::While) {
+            return self.parse_while_statement();
+        }
+        if self.match_simple(TokenKind::If) {
+            return self.parse_if_statement();
+        }
+        if self.match_simple(TokenKind::Fn) {
+            return Err(MuninnError::new(
+                "parser",
+                "nested functions are not supported",
+                self.previous().span,
+            ));
+        }
+        if !inside_block && self.check_simple(TokenKind::Eof) {
+            return Err(MuninnError::new(
+                "parser",
+                "unexpected end of input",
+                self.peek().span,
+            ));
+        }
+        if self.is_assignment_statement() {
+            return self.parse_assignment_statement();
+        }
+        self.parse_expression_statement()
     }
 
-    fn parse_function_decl(&mut self, is_method: bool) -> Result<FunctionDecl, MuninnError> {
-        let name = if is_method {
-            if self.match_where(|k| matches!(k, TokenKind::Init)) {
-                "init".to_string()
-            } else {
-                self.consume_identifier("expected method name")?
-            }
-        } else {
-            self.consume_identifier("expected function name")?
-        };
-
-        let span = self.previous().span;
-        let type_params = self.parse_type_params_opt()?;
-        self.consume_where(
-            |k| matches!(k, TokenKind::LeftParen),
-            "expected '(' after function name",
-        )?;
+    fn parse_function_statement(&mut self) -> Result<Stmt, MuninnError> {
+        let start = self.previous().span;
+        let (name, name_span) = self.consume_identifier_with_span("expected function name")?;
+        self.consume_simple(TokenKind::LeftParen, "expected '(' after function name")?;
 
         let mut params = Vec::new();
-        if !self.check_where(|k| matches!(k, TokenKind::RightParen)) {
+        if !self.check_simple(TokenKind::RightParen) {
             loop {
+                let param_span = self.peek().span;
                 let param_name = self.consume_identifier("expected parameter name")?;
-                let param_span = self.previous().span;
-                self.consume_where(
-                    |k| matches!(k, TokenKind::Colon),
-                    "expected ':' after parameter name",
-                )?;
+                self.consume_simple(TokenKind::Colon, "expected ':' after parameter name")?;
                 let param_ty = self.parse_type_expr()?;
                 params.push(Param {
+                    id: self.alloc_id(),
                     name: param_name,
                     ty: param_ty,
-                    span: param_span,
+                    span: param_span.merge(self.previous().span),
                 });
-
-                if !self.match_where(|k| matches!(k, TokenKind::Comma)) {
+                if !self.match_simple(TokenKind::Comma) {
                     break;
                 }
             }
         }
-
-        self.consume_where(
-            |k| matches!(k, TokenKind::RightParen),
-            "expected ')' after parameters",
-        )?;
-
-        let return_type = if self.match_where(|k| matches!(k, TokenKind::Arrow)) {
-            Some(self.parse_type_expr()?)
-        } else if name == "init" {
-            Some(TypeExpr::Void)
-        } else {
-            None
-        };
-
-        let body = self.parse_block_expr()?;
-
-        Ok(FunctionDecl {
+        self.consume_simple(TokenKind::RightParen, "expected ')' after parameters")?;
+        self.consume_simple(TokenKind::Arrow, "expected '->' before return type")?;
+        let return_type = self.parse_type_expr()?;
+        let body = self.parse_block()?;
+        let span = start.merge(body.span);
+        let function = FunctionDecl {
+            id: self.alloc_id(),
             name,
-            type_params,
+            name_span,
             params,
             return_type,
             body,
             span,
-        })
-    }
-
-    fn parse_class_decl(&mut self) -> Result<ClassDecl, MuninnError> {
-        let name = self.consume_identifier("expected class name")?;
-        let span = self.previous().span;
-        let type_params = self.parse_type_params_opt()?;
-        self.consume_where(
-            |k| matches!(k, TokenKind::LeftBrace),
-            "expected '{' after class name",
-        )?;
-
-        let mut fields = Vec::new();
-        let mut methods = Vec::new();
-        let mut init = None;
-
-        while !self.check_where(|k| matches!(k, TokenKind::RightBrace)) && !self.is_at_end() {
-            if self.match_where(|k| matches!(k, TokenKind::Let)) {
-                let field_name = self.consume_identifier("expected field name")?;
-                let field_span = self.previous().span;
-                self.consume_where(
-                    |k| matches!(k, TokenKind::Colon),
-                    "expected ':' after field name",
-                )?;
-                let field_type = self.parse_type_expr()?;
-                self.consume_where(
-                    |k| matches!(k, TokenKind::Semicolon),
-                    "expected ';' after field declaration",
-                )?;
-                fields.push(FieldDecl {
-                    name: field_name,
-                    ty: field_type,
-                    span: field_span,
-                });
-                continue;
-            }
-
-            if self.match_where(|k| matches!(k, TokenKind::Fn)) {
-                let method = self.parse_function_decl(true)?;
-                if method.name == "init" {
-                    init = Some(method);
-                } else {
-                    methods.push(method);
-                }
-                continue;
-            }
-
-            return Err(MuninnError::new(
-                "parser",
-                "expected class member declaration",
-                self.peek().span,
-            ));
-        }
-
-        self.consume_where(
-            |k| matches!(k, TokenKind::RightBrace),
-            "expected '}' after class body",
-        )?;
-
-        Ok(ClassDecl {
-            name,
-            type_params,
-            fields,
-            methods,
-            init,
+        };
+        Ok(Stmt {
+            id: self.alloc_id(),
+            kind: StmtKind::Function(function),
             span,
         })
     }
 
-    fn parse_enum_decl(&mut self) -> Result<EnumDecl, MuninnError> {
-        let name = self.consume_identifier("expected enum name")?;
-        let span = self.previous().span;
-        self.consume_where(
-            |k| matches!(k, TokenKind::LeftBrace),
-            "expected '{' after enum name",
-        )?;
-
-        let mut variants = Vec::new();
-        while !self.check_where(|k| matches!(k, TokenKind::RightBrace)) && !self.is_at_end() {
-            variants.push(self.consume_identifier("expected enum variant name")?);
-            if !self.match_where(|k| matches!(k, TokenKind::Comma)) {
-                break;
-            }
-        }
-
-        self.consume_where(
-            |k| matches!(k, TokenKind::RightBrace),
-            "expected '}' after enum declaration",
-        )?;
-
-        Ok(EnumDecl {
-            name,
-            variants,
-            span,
-        })
-    }
-
-    fn parse_statement(&mut self) -> Result<Stmt, MuninnError> {
-        if self.match_where(|k| matches!(k, TokenKind::Return)) {
-            let span = self.previous().span;
-            let value = if self.check_where(|k| matches!(k, TokenKind::Semicolon)) {
-                None
-            } else {
-                Some(self.parse_expression()?)
-            };
-            self.consume_where(
-                |k| matches!(k, TokenKind::Semicolon),
-                "expected ';' after return value",
-            )?;
-            return Ok(Stmt::Return { value, span });
-        }
-
-        if self.match_where(|k| matches!(k, TokenKind::Break)) {
-            let span = self.previous().span;
-            self.consume_where(
-                |k| matches!(k, TokenKind::Semicolon),
-                "expected ';' after break",
-            )?;
-            return Ok(Stmt::Break { span });
-        }
-
-        if self.match_where(|k| matches!(k, TokenKind::Continue)) {
-            let span = self.previous().span;
-            self.consume_where(
-                |k| matches!(k, TokenKind::Semicolon),
-                "expected ';' after continue",
-            )?;
-            return Ok(Stmt::Continue { span });
-        }
-
-        if self.match_where(|k| matches!(k, TokenKind::While)) {
-            let span = self.previous().span;
-            self.consume_where(
-                |k| matches!(k, TokenKind::LeftParen),
-                "expected '(' after while",
-            )?;
-            let condition = self.parse_expression()?;
-            self.consume_where(
-                |k| matches!(k, TokenKind::RightParen),
-                "expected ')' after while condition",
-            )?;
-            let body = self.parse_block_expr()?;
-            return Ok(Stmt::While {
-                condition,
-                body,
-                span,
-            });
-        }
-
-        if self.match_where(|k| matches!(k, TokenKind::If)) {
-            let span = self.previous().span;
-            return self.parse_if_stmt(span);
-        }
-
-        if self.match_where(|k| matches!(k, TokenKind::For)) {
-            return self.parse_for_range_stmt();
-        }
-
-        let expr = self.parse_expression()?;
-        let span = expr.span();
-        self.consume_where(
-            |k| matches!(k, TokenKind::Semicolon),
-            "expected ';' after expression statement",
-        )?;
-        Ok(Stmt::Expression { expr, span })
-    }
-
-    fn parse_for_range_stmt(&mut self) -> Result<Stmt, MuninnError> {
-        let span = self.previous().span;
-        let var_name = self.consume_identifier("expected loop variable after 'for'")?;
-        self.consume_where(
-            |k| matches!(k, TokenKind::In),
-            "expected 'in' after loop variable",
-        )?;
-        let start = self.parse_expression()?;
-        self.consume_where(
-            |k| matches!(k, TokenKind::DotDot),
-            "expected '..' in for-range loop",
-        )?;
-        let end = self.parse_expression()?;
-        let body = self.parse_block_expr()?;
-        Ok(Stmt::ForRange {
-            var_name,
-            start,
-            end,
-            body,
-            span,
-        })
-    }
-
-    fn parse_if_stmt(&mut self, span: Span) -> Result<Stmt, MuninnError> {
-        self.consume_where(
-            |k| matches!(k, TokenKind::LeftParen),
-            "expected '(' after if",
-        )?;
-        let condition = self.parse_expression()?;
-        self.consume_where(
-            |k| matches!(k, TokenKind::RightParen),
-            "expected ')' after if condition",
-        )?;
-        let then_branch = self.parse_block_expr()?;
-        let else_branch = if self.match_where(|k| matches!(k, TokenKind::Else)) {
-            Some(self.parse_block_expr()?)
+    fn parse_let_statement(&mut self) -> Result<Stmt, MuninnError> {
+        let start = self.previous().span;
+        let mutable = self.match_simple(TokenKind::Mut);
+        let (name, name_span) = self.consume_identifier_with_span("expected variable name")?;
+        let ty = if self.match_simple(TokenKind::Colon) {
+            Some(self.parse_type_expr()?)
         } else {
             None
         };
-        self.match_where(|k| matches!(k, TokenKind::Semicolon));
-        Ok(Stmt::If {
-            condition,
-            then_branch,
-            else_branch,
+        self.consume_simple(TokenKind::Equal, "expected '=' after variable name")?;
+        let initializer = self.parse_expression()?;
+        let end_span = self
+            .consume_simple(TokenKind::Semicolon, "expected ';' after let binding")?
+            .span;
+        Ok(Stmt {
+            id: self.alloc_id(),
+            kind: StmtKind::Let {
+                name,
+                name_span,
+                mutable,
+                ty,
+                initializer,
+            },
+            span: start.merge(end_span),
+        })
+    }
+
+    fn parse_return_statement(&mut self) -> Result<Stmt, MuninnError> {
+        let start = self.previous().span;
+        let value = if self.check_simple(TokenKind::Semicolon) {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
+        let end_span = self
+            .consume_simple(TokenKind::Semicolon, "expected ';' after return")?
+            .span;
+        Ok(Stmt {
+            id: self.alloc_id(),
+            kind: StmtKind::Return(value),
+            span: start.merge(end_span),
+        })
+    }
+
+    fn parse_while_statement(&mut self) -> Result<Stmt, MuninnError> {
+        let start = self.previous().span;
+        self.consume_simple(TokenKind::LeftParen, "expected '(' after 'while'")?;
+        let condition = self.parse_expression()?;
+        self.consume_simple(TokenKind::RightParen, "expected ')' after while condition")?;
+        let body = self.parse_block()?;
+        let body_span = body.span;
+        Ok(Stmt {
+            id: self.alloc_id(),
+            kind: StmtKind::While { condition, body },
+            span: start.merge(body_span),
+        })
+    }
+
+    fn parse_if_statement(&mut self) -> Result<Stmt, MuninnError> {
+        let start = self.previous().span;
+        self.consume_simple(TokenKind::LeftParen, "expected '(' after 'if'")?;
+        let condition = self.parse_expression()?;
+        self.consume_simple(TokenKind::RightParen, "expected ')' after if condition")?;
+        let then_branch = self.parse_block()?;
+        let else_branch = if self.match_simple(TokenKind::Else) {
+            Some(self.parse_block()?)
+        } else {
+            None
+        };
+        let span = start.merge(else_branch.as_ref().map(|block| block.span).unwrap_or(then_branch.span));
+        Ok(Stmt {
+            id: self.alloc_id(),
+            kind: StmtKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            },
             span,
+        })
+    }
+
+    fn parse_assignment_statement(&mut self) -> Result<Stmt, MuninnError> {
+        let start = self.peek().span;
+        let (name, name_span) = self.consume_identifier_with_span("expected assignment target")?;
+        self.consume_simple(TokenKind::Equal, "expected '=' in assignment")?;
+        let value = self.parse_expression()?;
+        let end_span = self
+            .consume_simple(TokenKind::Semicolon, "expected ';' after assignment")?
+            .span;
+        Ok(Stmt {
+            id: self.alloc_id(),
+            kind: StmtKind::Assign {
+                name,
+                name_span,
+                value,
+            },
+            span: start.merge(end_span),
+        })
+    }
+
+    fn parse_expression_statement(&mut self) -> Result<Stmt, MuninnError> {
+        let expr = self.parse_expression()?;
+        let end_span = self
+            .consume_simple(TokenKind::Semicolon, "expected ';' after expression")?
+            .span;
+        let span = expr.span.merge(end_span);
+        Ok(Stmt {
+            id: self.alloc_id(),
+            kind: StmtKind::Expr(expr),
+            span,
+        })
+    }
+
+    fn parse_block(&mut self) -> Result<Block, MuninnError> {
+        let start = self.consume_simple(TokenKind::LeftBrace, "expected '{'")?.span;
+        let mut statements = Vec::new();
+        while !self.check_simple(TokenKind::RightBrace) && !self.is_at_end() {
+            statements.push(self.parse_statement(true)?);
+        }
+        let end_span = self
+            .consume_simple(TokenKind::RightBrace, "expected '}' after block")?
+            .span;
+        Ok(Block {
+            id: self.alloc_id(),
+            statements,
+            span: start.merge(end_span),
         })
     }
 
     fn parse_expression(&mut self) -> Result<Expr, MuninnError> {
-        self.parse_assignment()
-    }
-
-    fn parse_assignment(&mut self) -> Result<Expr, MuninnError> {
-        let expr = self.parse_pipeline()?;
-        if self.match_where(|k| matches!(k, TokenKind::Equal)) {
-            let value = self.parse_assignment()?;
-            let span = expr.span();
-            let target = match expr {
-                Expr::Variable(name, target_span) => AssignTarget::Variable(name, target_span),
-                Expr::Property { object, name, span } => {
-                    AssignTarget::Property { object, name, span }
-                }
-                Expr::Index {
-                    target,
-                    index,
-                    span,
-                } => AssignTarget::Index {
-                    target,
-                    index,
-                    span,
-                },
-                Expr::GridIndex { target, x, y, span } => {
-                    AssignTarget::GridIndex { target, x, y, span }
-                }
-                _ => {
-                    return Err(MuninnError::new(
-                        "parser",
-                        "invalid assignment target",
-                        span,
-                    ));
-                }
-            };
-            return Ok(Expr::Assign {
-                target,
-                value: Box::new(value),
-                span,
-            });
-        }
-        Ok(expr)
-    }
-
-    fn parse_pipeline(&mut self) -> Result<Expr, MuninnError> {
-        let mut expr = self.parse_or()?;
-        while self.match_where(|k| matches!(k, TokenKind::PipeGreater)) {
-            let span = expr.span();
-            let rhs = self.parse_call()?;
-            let (callee, args) = match rhs {
-                Expr::Call { callee, args, .. } => (callee, args),
-                other => (Box::new(other), Vec::new()),
-            };
-            expr = Expr::Pipeline {
-                lhs: Box::new(expr),
-                callee,
-                args,
-                span,
-            };
-        }
-        Ok(expr)
+        self.parse_or()
     }
 
     fn parse_or(&mut self) -> Result<Expr, MuninnError> {
         let mut expr = self.parse_and()?;
-        while self.match_where(|k| matches!(k, TokenKind::OrOr)) {
+        while self.match_simple(TokenKind::OrOr) {
+            let op_span = self.previous().span;
             let right = self.parse_and()?;
-            let span = expr.span();
-            expr = Expr::Binary {
-                left: Box::new(expr),
-                op: BinaryOp::Or,
-                right: Box::new(right),
-                span,
+            let span = expr.span.merge(right.span);
+            expr = Expr {
+                id: self.alloc_id(),
+                kind: ExprKind::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::Or,
+                    right: Box::new(right),
+                },
+                span: op_span.merge(span),
             };
         }
         Ok(expr)
@@ -437,14 +279,18 @@ impl Parser {
 
     fn parse_and(&mut self) -> Result<Expr, MuninnError> {
         let mut expr = self.parse_equality()?;
-        while self.match_where(|k| matches!(k, TokenKind::AndAnd)) {
+        while self.match_simple(TokenKind::AndAnd) {
+            let op_span = self.previous().span;
             let right = self.parse_equality()?;
-            let span = expr.span();
-            expr = Expr::Binary {
-                left: Box::new(expr),
-                op: BinaryOp::And,
-                right: Box::new(right),
-                span,
+            let span = expr.span.merge(right.span);
+            expr = Expr {
+                id: self.alloc_id(),
+                kind: ExprKind::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::And,
+                    right: Box::new(right),
+                },
+                span: op_span.merge(span),
             };
         }
         Ok(expr)
@@ -452,48 +298,53 @@ impl Parser {
 
     fn parse_equality(&mut self) -> Result<Expr, MuninnError> {
         let mut expr = self.parse_comparison()?;
-        while self.match_where(|k| matches!(k, TokenKind::EqualEqual | TokenKind::BangEqual)) {
-            let operator = match &self.previous().kind {
+        while self.match_any(&[TokenKind::EqualEqual, TokenKind::BangEqual]) {
+            let op_token = self.previous().clone();
+            let right = self.parse_comparison()?;
+            let op = match op_token.kind {
                 TokenKind::EqualEqual => BinaryOp::Equal,
                 TokenKind::BangEqual => BinaryOp::NotEqual,
                 _ => unreachable!(),
             };
-            let right = self.parse_comparison()?;
-            let span = expr.span();
-            expr = Expr::Binary {
-                left: Box::new(expr),
-                op: operator,
-                right: Box::new(right),
+            let span = expr.span.merge(right.span);
+            expr = Expr {
+                id: self.alloc_id(),
+                kind: ExprKind::Binary {
+                    left: Box::new(expr),
+                    op,
+                    right: Box::new(right),
+                },
                 span,
-            }
+            };
         }
         Ok(expr)
     }
 
     fn parse_comparison(&mut self) -> Result<Expr, MuninnError> {
         let mut expr = self.parse_term()?;
-        while self.match_where(|k| {
-            matches!(
-                k,
-                TokenKind::Greater
-                    | TokenKind::GreaterEqual
-                    | TokenKind::Less
-                    | TokenKind::LessEqual
-            )
-        }) {
-            let operator = match &self.previous().kind {
+        while self.match_any(&[
+            TokenKind::Greater,
+            TokenKind::GreaterEqual,
+            TokenKind::Less,
+            TokenKind::LessEqual,
+        ]) {
+            let op_token = self.previous().clone();
+            let right = self.parse_term()?;
+            let op = match op_token.kind {
                 TokenKind::Greater => BinaryOp::Greater,
                 TokenKind::GreaterEqual => BinaryOp::GreaterEqual,
                 TokenKind::Less => BinaryOp::Less,
                 TokenKind::LessEqual => BinaryOp::LessEqual,
                 _ => unreachable!(),
             };
-            let right = self.parse_term()?;
-            let span = expr.span();
-            expr = Expr::Binary {
-                left: Box::new(expr),
-                op: operator,
-                right: Box::new(right),
+            let span = expr.span.merge(right.span);
+            expr = Expr {
+                id: self.alloc_id(),
+                kind: ExprKind::Binary {
+                    left: Box::new(expr),
+                    op,
+                    right: Box::new(right),
+                },
                 span,
             };
         }
@@ -502,18 +353,22 @@ impl Parser {
 
     fn parse_term(&mut self) -> Result<Expr, MuninnError> {
         let mut expr = self.parse_factor()?;
-        while self.match_where(|k| matches!(k, TokenKind::Plus | TokenKind::Minus)) {
-            let operator = match &self.previous().kind {
+        while self.match_any(&[TokenKind::Plus, TokenKind::Minus]) {
+            let op_token = self.previous().clone();
+            let right = self.parse_factor()?;
+            let op = match op_token.kind {
                 TokenKind::Plus => BinaryOp::Add,
                 TokenKind::Minus => BinaryOp::Subtract,
                 _ => unreachable!(),
             };
-            let right = self.parse_factor()?;
-            let span = expr.span();
-            expr = Expr::Binary {
-                left: Box::new(expr),
-                op: operator,
-                right: Box::new(right),
+            let span = expr.span.merge(right.span);
+            expr = Expr {
+                id: self.alloc_id(),
+                kind: ExprKind::Binary {
+                    left: Box::new(expr),
+                    op,
+                    right: Box::new(right),
+                },
                 span,
             };
         }
@@ -522,18 +377,22 @@ impl Parser {
 
     fn parse_factor(&mut self) -> Result<Expr, MuninnError> {
         let mut expr = self.parse_unary()?;
-        while self.match_where(|k| matches!(k, TokenKind::Star | TokenKind::Slash)) {
-            let operator = match &self.previous().kind {
+        while self.match_any(&[TokenKind::Star, TokenKind::Slash]) {
+            let op_token = self.previous().clone();
+            let right = self.parse_unary()?;
+            let op = match op_token.kind {
                 TokenKind::Star => BinaryOp::Multiply,
                 TokenKind::Slash => BinaryOp::Divide,
                 _ => unreachable!(),
             };
-            let right = self.parse_unary()?;
-            let span = expr.span();
-            expr = Expr::Binary {
-                left: Box::new(expr),
-                op: operator,
-                right: Box::new(right),
+            let span = expr.span.merge(right.span);
+            expr = Expr {
+                id: self.alloc_id(),
+                kind: ExprKind::Binary {
+                    left: Box::new(expr),
+                    op,
+                    right: Box::new(right),
+                },
                 span,
             };
         }
@@ -541,17 +400,21 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, MuninnError> {
-        if self.match_where(|k| matches!(k, TokenKind::Bang | TokenKind::Minus)) {
-            let op = match &self.previous().kind {
+        if self.match_any(&[TokenKind::Bang, TokenKind::Minus]) {
+            let op_token = self.previous().clone();
+            let expr = self.parse_unary()?;
+            let op = match op_token.kind {
                 TokenKind::Bang => UnaryOp::Not,
                 TokenKind::Minus => UnaryOp::Negate,
                 _ => unreachable!(),
             };
-            let span = self.previous().span;
-            let right = self.parse_unary()?;
-            return Ok(Expr::Unary {
-                op,
-                expr: Box::new(right),
+            let span = op_token.span.merge(expr.span);
+            return Ok(Expr {
+                id: self.alloc_id(),
+                kind: ExprKind::Unary {
+                    op,
+                    expr: Box::new(expr),
+                },
                 span,
             });
         }
@@ -560,605 +423,161 @@ impl Parser {
 
     fn parse_call(&mut self) -> Result<Expr, MuninnError> {
         let mut expr = self.parse_primary()?;
-
         loop {
-            if self.match_where(|k| matches!(k, TokenKind::LeftParen)) {
-                let span = expr.span();
+            if self.match_simple(TokenKind::LeftParen) {
                 let mut args = Vec::new();
-                if !self.check_where(|k| matches!(k, TokenKind::RightParen)) {
+                if !self.check_simple(TokenKind::RightParen) {
                     loop {
                         args.push(self.parse_expression()?);
-                        if !self.match_where(|k| matches!(k, TokenKind::Comma)) {
+                        if !self.match_simple(TokenKind::Comma) {
                             break;
                         }
                     }
                 }
-                self.consume_where(
-                    |k| matches!(k, TokenKind::RightParen),
-                    "expected ')' after call arguments",
-                )?;
-                expr = Expr::Call {
-                    callee: Box::new(expr),
-                    args,
-                    span,
-                };
-                continue;
-            }
-
-            if self.match_where(|k| matches!(k, TokenKind::Dot)) {
-                let name = self.consume_identifier("expected property name after '.'")?;
-                let span = self.previous().span;
-                expr = match expr {
-                    Expr::Variable(enum_name, _) if starts_with_uppercase(&enum_name) => {
-                        Expr::EnumVariant {
-                            enum_name,
-                            variant_name: name,
-                            span,
-                        }
-                    }
-                    other => Expr::Property {
-                        object: Box::new(other),
-                        name,
-                        span,
+                let end = self.consume_simple(TokenKind::RightParen, "expected ')' after arguments")?;
+                let span = expr.span.merge(end.span);
+                expr = Expr {
+                    id: self.alloc_id(),
+                    kind: ExprKind::Call {
+                        callee: Box::new(expr),
+                        args,
                     },
-                };
-                continue;
-            }
-
-            if self.match_where(|k| matches!(k, TokenKind::LeftBracket)) {
-                let span = expr.span();
-                let first = self.parse_expression()?;
-                if self.match_where(|k| matches!(k, TokenKind::Comma)) {
-                    let second = self.parse_expression()?;
-                    self.consume_where(
-                        |k| matches!(k, TokenKind::RightBracket),
-                        "expected ']' after grid indices",
-                    )?;
-                    expr = Expr::GridIndex {
-                        target: Box::new(expr),
-                        x: Box::new(first),
-                        y: Box::new(second),
-                        span,
-                    };
-                } else {
-                    self.consume_where(
-                        |k| matches!(k, TokenKind::RightBracket),
-                        "expected ']' after index expression",
-                    )?;
-                    expr = Expr::Index {
-                        target: Box::new(expr),
-                        index: Box::new(first),
-                        span,
-                    };
-                }
-                continue;
-            }
-
-            if self.match_where(|k| matches!(k, TokenKind::Question)) {
-                let span = expr.span();
-                expr = Expr::Try {
-                    expr: Box::new(expr),
                     span,
                 };
                 continue;
             }
-
             break;
         }
-
         Ok(expr)
     }
 
     fn parse_primary(&mut self) -> Result<Expr, MuninnError> {
-        if self.is_at_end() {
-            return Err(MuninnError::new(
-                "parser",
-                "expected expression",
-                self.peek().span,
-            ));
-        }
-
         let token = self.advance().clone();
-        match token.kind {
-            TokenKind::False => Ok(Expr::Bool(false, token.span)),
-            TokenKind::True => Ok(Expr::Bool(true, token.span)),
-            TokenKind::IntLiteral(v) => Ok(Expr::Int(v, token.span)),
-            TokenKind::FloatLiteral(v) => Ok(Expr::Float(v, token.span)),
-            TokenKind::StringLiteral(text) => self.parse_string_primary(text, token.span),
-            TokenKind::SelfKw => Ok(Expr::SelfRef(token.span)),
-            TokenKind::Identifier(name) => Ok(Expr::Variable(name, token.span)),
+        let kind = match token.kind {
+            TokenKind::IntLiteral(value) => ExprKind::Int(value),
+            TokenKind::FloatLiteral(value) => ExprKind::Float(value),
+            TokenKind::True => ExprKind::Bool(true),
+            TokenKind::False => ExprKind::Bool(false),
+            TokenKind::StringLiteral(value) => ExprKind::String(value),
+            TokenKind::Identifier(name) => ExprKind::Variable(name),
             TokenKind::LeftParen => {
                 let expr = self.parse_expression()?;
-                self.consume_where(
-                    |k| matches!(k, TokenKind::RightParen),
-                    "expected ')' after expression",
-                )?;
-                Ok(Expr::Grouping(Box::new(expr), token.span))
+                let end_span = self
+                    .consume_simple(TokenKind::RightParen, "expected ')' after expression")?
+                    .span;
+                return Ok(Expr {
+                    id: self.alloc_id(),
+                    kind: ExprKind::Grouping(Box::new(expr)),
+                    span: token.span.merge(end_span),
+                });
             }
-            TokenKind::LeftBrace => {
-                self.current = self.current.saturating_sub(1);
-                let block = self.parse_block_expr()?;
-                Ok(Expr::Block(block))
+            _ => {
+                return Err(MuninnError::new(
+                    "parser",
+                    "expected expression",
+                    token.span,
+                ));
             }
-            TokenKind::If => self.parse_if_expression(token.span),
-            TokenKind::Unless => self.parse_unless_expression(token.span),
-            TokenKind::Match => self.parse_match_expression(token.span),
-            TokenKind::LeftBracket => {
-                let mut items = Vec::new();
-                if !self.check_where(|k| matches!(k, TokenKind::RightBracket)) {
-                    loop {
-                        items.push(self.parse_expression()?);
-                        if !self.match_where(|k| matches!(k, TokenKind::Comma)) {
-                            break;
-                        }
-                    }
-                }
-                self.consume_where(
-                    |k| matches!(k, TokenKind::RightBracket),
-                    "expected ']' after array literal",
-                )?;
-                Ok(Expr::ArrayLiteral(items, token.span))
-            }
+        };
+
+        Ok(Expr {
+            id: self.alloc_id(),
+            kind,
+            span: token.span,
+        })
+    }
+
+    fn parse_type_expr(&mut self) -> Result<TypeExpr, MuninnError> {
+        let token = self.advance().clone();
+        match token.kind {
+            TokenKind::TypeInt => Ok(TypeExpr::Int),
+            TokenKind::TypeFloat => Ok(TypeExpr::Float),
+            TokenKind::TypeBool => Ok(TypeExpr::Bool),
+            TokenKind::TypeString => Ok(TypeExpr::String),
+            TokenKind::TypeVoid => Ok(TypeExpr::Void),
             _ => Err(MuninnError::new(
                 "parser",
-                "expected expression",
+                "expected type name",
                 token.span,
             )),
         }
     }
 
-    fn parse_match_expression(&mut self, span: Span) -> Result<Expr, MuninnError> {
-        self.consume_where(
-            |k| matches!(k, TokenKind::LeftParen),
-            "expected '(' after match",
-        )?;
-        let scrutinee = self.parse_expression()?;
-        self.consume_where(
-            |k| matches!(k, TokenKind::RightParen),
-            "expected ')' after match scrutinee",
-        )?;
-        self.consume_where(
-            |k| matches!(k, TokenKind::LeftBrace),
-            "expected '{' to start match arms",
-        )?;
-
-        let mut arms = Vec::new();
-        while !self.check_where(|k| matches!(k, TokenKind::RightBrace)) && !self.is_at_end() {
-            let pattern = self.parse_match_pattern()?;
-            let arm_span = self.previous().span;
-            self.consume_where(
-                |k| matches!(k, TokenKind::FatArrow),
-                "expected '=>' after match pattern",
-            )?;
-            let expr = self.parse_expression()?;
-            arms.push(MatchArm {
-                pattern,
-                expr,
-                span: arm_span,
-            });
-            if !self.match_where(|k| matches!(k, TokenKind::Comma)) {
-                break;
-            }
-        }
-
-        self.consume_where(
-            |k| matches!(k, TokenKind::RightBrace),
-            "expected '}' after match arms",
-        )?;
-
-        Ok(Expr::Match {
-            scrutinee: Box::new(scrutinee),
-            arms,
-            span,
-        })
+    fn is_assignment_statement(&self) -> bool {
+        matches!(self.peek().kind, TokenKind::Identifier(_))
+            && self
+                .tokens
+                .get(self.current + 1)
+                .is_some_and(|token| matches!(token.kind, TokenKind::Equal))
     }
 
-    fn parse_match_pattern(&mut self) -> Result<MatchPattern, MuninnError> {
-        if self.match_where(|k| matches!(k, TokenKind::Identifier(name) if name == "_")) {
-            return Ok(MatchPattern::Wildcard);
+    fn synchronize(&mut self) {
+        while !self.is_at_end() {
+            if matches!(self.previous().kind, TokenKind::Semicolon) {
+                return;
+            }
+            match self.peek().kind {
+                TokenKind::Fn
+                | TokenKind::Let
+                | TokenKind::Return
+                | TokenKind::If
+                | TokenKind::While => return,
+                _ => {
+                    self.current += 1;
+                }
+            }
         }
+    }
 
-        let first = self.consume_identifier("expected match pattern")?;
-        if self.match_where(|k| matches!(k, TokenKind::Dot)) {
-            let second = self.consume_identifier("expected enum variant after '.'")?;
-            Ok(MatchPattern::EnumVariant {
-                enum_name: first,
-                variant_name: second,
-            })
+    fn consume_identifier(&mut self, message: &'static str) -> Result<String, MuninnError> {
+        self.consume_identifier_with_span(message).map(|(name, _)| name)
+    }
+
+    fn consume_identifier_with_span(
+        &mut self,
+        message: &'static str,
+    ) -> Result<(String, crate::span::Span), MuninnError> {
+        let token = self.advance().clone();
+        if let TokenKind::Identifier(name) = token.kind {
+            Ok((name, token.span))
         } else {
-            Ok(MatchPattern::Variant(first))
+            Err(MuninnError::new("parser", message, token.span))
         }
     }
 
-    fn parse_if_expression(&mut self, span: Span) -> Result<Expr, MuninnError> {
-        self.consume_where(
-            |k| matches!(k, TokenKind::LeftParen),
-            "expected '(' after if",
-        )?;
-        let condition = self.parse_expression()?;
-        self.consume_where(
-            |k| matches!(k, TokenKind::RightParen),
-            "expected ')' after if condition",
-        )?;
-        let then_branch = self.parse_block_expr()?;
-        self.consume_where(
-            |k| matches!(k, TokenKind::Else),
-            "if expression requires an else branch",
-        )?;
-        let else_branch = self.parse_block_expr()?;
-        Ok(Expr::If {
-            condition: Box::new(condition),
-            then_branch,
-            else_branch,
-            span,
-        })
-    }
-
-    fn parse_unless_expression(&mut self, span: Span) -> Result<Expr, MuninnError> {
-        self.consume_where(
-            |k| matches!(k, TokenKind::LeftParen),
-            "expected '(' after unless",
-        )?;
-        let condition = self.parse_expression()?;
-        self.consume_where(
-            |k| matches!(k, TokenKind::RightParen),
-            "expected ')' after unless condition",
-        )?;
-        let then_branch = self.parse_block_expr()?;
-        let else_branch = if self.match_where(|k| matches!(k, TokenKind::Else)) {
-            Some(self.parse_block_expr()?)
-        } else {
-            None
-        };
-
-        Ok(Expr::Unless {
-            condition: Box::new(condition),
-            then_branch,
-            else_branch,
-            span,
-        })
-    }
-
-    fn parse_block_expr(&mut self) -> Result<BlockExpr, MuninnError> {
-        let open = self.consume_where(
-            |k| matches!(k, TokenKind::LeftBrace),
-            "expected '{' to start block",
-        )?;
-        let mut statements = Vec::new();
-        let mut tail = None;
-
-        while !self.check_where(|k| matches!(k, TokenKind::RightBrace)) && !self.is_at_end() {
-            if self.check_where(|k| matches!(k, TokenKind::If)) {
-                let checkpoint = self.current;
-                if let Ok(expr) = self.parse_expression() {
-                    if self.match_where(|k| matches!(k, TokenKind::Semicolon)) {
-                        let span = expr.span();
-                        statements.push(Stmt::Expression { expr, span });
-                        continue;
-                    }
-
-                    tail = Some(Box::new(expr));
-                    break;
-                }
-
-                self.current = checkpoint;
-                statements.push(self.parse_declaration()?);
-                continue;
-            }
-
-            if self.check_where(|k| {
-                matches!(
-                    k,
-                    TokenKind::Let | TokenKind::Fn | TokenKind::Class | TokenKind::Enum
-                )
-            }) || self.check_where(|k| {
-                matches!(
-                    k,
-                    TokenKind::Return
-                        | TokenKind::While
-                        | TokenKind::For
-                        | TokenKind::Break
-                        | TokenKind::Continue
-                )
-            }) {
-                statements.push(self.parse_declaration()?);
-                continue;
-            }
-
-            let expr = self.parse_expression()?;
-            if self.match_where(|k| matches!(k, TokenKind::Semicolon)) {
-                let span = expr.span();
-                statements.push(Stmt::Expression { expr, span });
-                continue;
-            }
-
-            tail = Some(Box::new(expr));
-            break;
-        }
-
-        self.consume_where(
-            |k| matches!(k, TokenKind::RightBrace),
-            "expected '}' to close block",
-        )?;
-
-        Ok(BlockExpr {
-            statements,
-            tail,
-            span: open.span,
-        })
-    }
-
-    fn parse_type_expr(&mut self) -> Result<TypeExpr, MuninnError> {
-        if let TokenKind::Identifier(name) = &self.peek().kind {
-            if name == "Option" {
-                self.advance();
-                self.consume_where(
-                    |k| matches!(k, TokenKind::LeftBracket),
-                    "expected '[' after Option",
-                )?;
-                let inner = self.parse_type_expr()?;
-                self.consume_where(
-                    |k| matches!(k, TokenKind::RightBracket),
-                    "expected ']' after Option inner type",
-                )?;
-                return Ok(TypeExpr::Option(Box::new(inner)));
-            }
-        }
-
-        let mut base = match &self.peek().kind {
-            TokenKind::TypeInt => {
-                self.advance();
-                TypeExpr::Int
-            }
-            TokenKind::TypeFloat => {
-                self.advance();
-                TypeExpr::Float
-            }
-            TokenKind::TypeString => {
-                self.advance();
-                TypeExpr::String
-            }
-            TokenKind::TypeBool => {
-                self.advance();
-                TypeExpr::Bool
-            }
-            TokenKind::TypeVoid => {
-                self.advance();
-                TypeExpr::Void
-            }
-            TokenKind::Identifier(name) => {
-                let name = name.clone();
-                self.advance();
-                TypeExpr::Named(name)
-            }
-            _ => {
-                return Err(MuninnError::new(
-                    "parser",
-                    "expected type annotation",
-                    self.peek().span,
-                ));
-            }
-        };
-
-        if let TypeExpr::Named(name) = &base {
-            if self.match_where(|k| matches!(k, TokenKind::Less)) {
-                let mut args = Vec::new();
-                if !self.check_where(|k| matches!(k, TokenKind::Greater)) {
-                    loop {
-                        args.push(self.parse_type_expr()?);
-                        if !self.match_where(|k| matches!(k, TokenKind::Comma)) {
-                            break;
-                        }
-                    }
-                }
-                self.consume_where(
-                    |k| matches!(k, TokenKind::Greater),
-                    "expected '>' after generic type arguments",
-                )?;
-                base = TypeExpr::Applied {
-                    name: name.clone(),
-                    args,
-                };
-            }
-        }
-
-        if !self.match_where(|k| matches!(k, TokenKind::LeftBracket)) {
-            return Ok(base);
-        }
-
-        let first = self.consume_int_literal("expected array/grid size")? as usize;
-        if self.match_where(|k| matches!(k, TokenKind::Comma)) {
-            let second = self.consume_int_literal("expected second grid size")? as usize;
-            self.consume_where(
-                |k| matches!(k, TokenKind::RightBracket),
-                "expected ']' after grid dimensions",
-            )?;
-            Ok(TypeExpr::Grid {
-                element: Box::new(base),
-                width: first,
-                height: second,
-            })
-        } else {
-            self.consume_where(
-                |k| matches!(k, TokenKind::RightBracket),
-                "expected ']' after array size",
-            )?;
-            Ok(TypeExpr::Array {
-                element: Box::new(base),
-                len: first,
-            })
-        }
-    }
-
-    fn parse_type_params_opt(&mut self) -> Result<Vec<String>, MuninnError> {
-        let mut params = Vec::new();
-        if !self.match_where(|k| matches!(k, TokenKind::Less)) {
-            return Ok(params);
-        }
-
-        if self.check_where(|k| matches!(k, TokenKind::Greater)) {
-            return Err(MuninnError::new(
-                "parser",
-                "generic parameter list cannot be empty",
-                self.peek().span,
-            ));
-        }
-
-        loop {
-            params.push(self.consume_identifier("expected generic type parameter")?);
-            if !self.match_where(|k| matches!(k, TokenKind::Comma)) {
-                break;
-            }
-        }
-
-        self.consume_where(
-            |k| matches!(k, TokenKind::Greater),
-            "expected '>' after generic type parameters",
-        )?;
-
-        Ok(params)
-    }
-
-    fn parse_string_primary(&self, text: String, span: Span) -> Result<Expr, MuninnError> {
-        if !text.contains('{') && !text.contains('}') {
-            return Ok(Expr::String(text, span));
-        }
-
-        let mut parts = Vec::new();
-        let mut chars = text.chars().peekable();
-        let mut current_text = String::new();
-
-        while let Some(ch) = chars.next() {
-            if ch == '{' {
-                if chars.peek().is_some_and(|c| *c == '{') {
-                    chars.next();
-                    current_text.push('{');
-                    continue;
-                }
-
-                if !current_text.is_empty() {
-                    parts.push(InterpolationPart::Text(std::mem::take(&mut current_text)));
-                }
-
-                let mut expr_source = String::new();
-                let mut depth = 0usize;
-                loop {
-                    let next = chars.next().ok_or_else(|| {
-                        MuninnError::new("parser", "unterminated interpolation segment", span)
-                    })?;
-                    if next == '{' {
-                        depth += 1;
-                        expr_source.push(next);
-                        continue;
-                    }
-                    if next == '}' {
-                        if depth == 0 {
-                            break;
-                        }
-                        depth -= 1;
-                        expr_source.push(next);
-                        continue;
-                    }
-                    expr_source.push(next);
-                }
-
-                if expr_source.trim().is_empty() {
-                    return Err(MuninnError::new(
-                        "parser",
-                        "empty interpolation expression",
-                        span,
-                    ));
-                }
-
-                let lexer = Lexer::new(expr_source.trim());
-                let tokens = lexer.lex().map_err(|mut errs| {
-                    errs.pop().unwrap_or_else(|| {
-                        MuninnError::new("parser", "invalid interpolation expression", span)
-                    })
-                })?;
-                let mut parser = Parser::new(tokens);
-                let expr = parser.parse_expression()?;
-                if !parser.is_at_end() {
-                    return Err(MuninnError::new(
-                        "parser",
-                        "unexpected tokens in interpolation expression",
-                        span,
-                    ));
-                }
-                parts.push(InterpolationPart::Expr(expr));
-                continue;
-            }
-
-            if ch == '}' {
-                if chars.peek().is_some_and(|c| *c == '}') {
-                    chars.next();
-                    current_text.push('}');
-                    continue;
-                }
-                return Err(MuninnError::new(
-                    "parser",
-                    "unmatched '}' in string literal",
-                    span,
-                ));
-            }
-
-            current_text.push(ch);
-        }
-
-        if !current_text.is_empty() {
-            parts.push(InterpolationPart::Text(current_text));
-        }
-
-        Ok(Expr::StringInterpolation { parts, span })
-    }
-
-    fn consume_identifier(&mut self, message: &str) -> Result<String, MuninnError> {
-        let token = self.consume_where(|k| matches!(k, TokenKind::Identifier(_)), message)?;
-        match token.kind {
-            TokenKind::Identifier(name) => Ok(name),
-            _ => unreachable!(),
-        }
-    }
-
-    fn consume_int_literal(&mut self, message: &str) -> Result<i64, MuninnError> {
-        let token = self.consume_where(|k| matches!(k, TokenKind::IntLiteral(_)), message)?;
-        match token.kind {
-            TokenKind::IntLiteral(v) => Ok(v),
-            _ => unreachable!(),
-        }
-    }
-
-    fn consume_where<F>(&mut self, predicate: F, message: &str) -> Result<Token, MuninnError>
-    where
-        F: Fn(&TokenKind) -> bool,
-    {
-        if self.check_where(predicate) {
-            Ok(self.advance().clone())
+    fn consume_simple(
+        &mut self,
+        expected: TokenKind,
+        message: &'static str,
+    ) -> Result<&Token, MuninnError> {
+        if self.check_simple(expected.clone()) {
+            Ok(self.advance())
         } else {
             Err(MuninnError::new("parser", message, self.peek().span))
         }
     }
 
-    fn match_where<F>(&mut self, predicate: F) -> bool
-    where
-        F: Fn(&TokenKind) -> bool,
-    {
-        if self.check_where(predicate) {
-            self.advance();
+    fn match_simple(&mut self, expected: TokenKind) -> bool {
+        if self.check_simple(expected) {
+            self.current += 1;
             true
         } else {
             false
         }
     }
 
-    fn check_where<F>(&self, predicate: F) -> bool
-    where
-        F: Fn(&TokenKind) -> bool,
-    {
-        if self.is_at_end() {
-            return false;
+    fn match_any(&mut self, expected: &[TokenKind]) -> bool {
+        for kind in expected {
+            if self.check_simple(kind.clone()) {
+                self.current += 1;
+                return true;
+            }
         }
-        predicate(&self.peek().kind)
+        false
+    }
+
+    fn check_simple(&self, expected: TokenKind) -> bool {
+        same_variant(&self.peek().kind, &expected)
     }
 
     fn advance(&mut self) -> &Token {
@@ -1177,122 +596,64 @@ impl Parser {
     }
 
     fn previous(&self) -> &Token {
-        if self.current == 0 {
-            &self.tokens[0]
-        } else {
-            &self.tokens[self.current - 1]
-        }
+        &self.tokens[self.current.saturating_sub(1)]
     }
 
-    fn synchronize(&mut self) {
-        while !self.is_at_end() {
-            if matches!(self.peek().kind, TokenKind::Semicolon) {
-                self.advance();
-                return;
-            }
-
-            if matches!(
-                self.peek().kind,
-                TokenKind::Class
-                    | TokenKind::Fn
-                    | TokenKind::Let
-                    | TokenKind::Enum
-                    | TokenKind::Return
-                    | TokenKind::While
-                    | TokenKind::If
-                    | TokenKind::For
-                    | TokenKind::Break
-                    | TokenKind::Continue
-                    | TokenKind::RightBrace
-            ) {
-                return;
-            }
-
-            self.advance();
-        }
+    fn alloc_id(&mut self) -> NodeId {
+        let id = self.next_node_id;
+        self.next_node_id += 1;
+        NodeId(id)
     }
 }
 
-fn starts_with_uppercase(name: &str) -> bool {
-    name.chars()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_uppercase())
+fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
+    std::mem::discriminant(left) == std::mem::discriminant(right)
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::ast::{ExprKind, StmtKind};
     use crate::lexer::Lexer;
 
     use super::Parser;
 
     #[test]
-    fn parses_range_for() {
-        let src = "for i in 0..10 { i; }";
-        let tokens = Lexer::new(src).lex().expect("tokens");
-        let mut parser = Parser::new(tokens);
-        let program = parser.parse_program().expect("program");
-        assert_eq!(program.statements.len(), 1);
-    }
-
-    #[test]
-    fn parses_interpolation() {
-        let src = "let x: Int = 10; let y: String = \"Value: {x}\";";
-        let tokens = Lexer::new(src).lex().expect("tokens");
-        let mut parser = Parser::new(tokens);
-        let program = parser.parse_program().expect("program");
-        assert_eq!(program.statements.len(), 2);
-    }
-
-    #[test]
-    fn parses_option_type_and_try() {
+    fn parses_function_and_loop() {
         let src = r#"
-fn checked(v: Float) -> Option[Float] {
-    if (v > 0.0) { __some(v) } else { __none }
+fn add(a: Int, b: Int) -> Int {
+    return a + b;
 }
 
-fn run(v: Float) -> Option[Float] {
-    let x: Float = checked(v)?;
-    __some(x)
+let mut total: Int = 0;
+while (total < 3) {
+    total = add(total, 1);
 }
 "#;
         let tokens = Lexer::new(src).lex().expect("tokens");
         let mut parser = Parser::new(tokens);
         let program = parser.parse_program().expect("program");
-        assert_eq!(program.statements.len(), 2);
-    }
-
-    #[test]
-    fn rejects_empty_interpolation_expression() {
-        let src = "let x: String = \"{}\";";
-        let tokens = Lexer::new(src).lex().expect("tokens");
-        let mut parser = Parser::new(tokens);
-        assert!(parser.parse_program().is_err());
-    }
-
-    #[test]
-    fn parses_inferred_let_binding() {
-        let src = "let x = 1; let y = x + 2;";
-        let tokens = Lexer::new(src).lex().expect("tokens");
-        let mut parser = Parser::new(tokens);
-        let program = parser.parse_program().expect("program");
-        assert_eq!(program.statements.len(), 2);
-    }
-
-    #[test]
-    fn recovers_and_reports_multiple_errors() {
-        let src = "let x: Int = ; let y: Float = ;";
-        let tokens = Lexer::new(src).lex().expect("tokens");
-        let mut parser = Parser::new(tokens);
-        let errors = parser.parse_program().expect_err("expected parser errors");
-        assert!(errors.len() >= 2);
-    }
-
-    #[test]
-    fn parses_if_statement_without_else() {
-        let src = "let mut x: Int = 0; if (x == 0) { x = 1; } x;";
-        let tokens = Lexer::new(src).lex().expect("tokens");
-        let mut parser = Parser::new(tokens);
-        let program = parser.parse_program().expect("program");
         assert_eq!(program.statements.len(), 3);
+        assert!(matches!(program.statements[0].kind, StmtKind::Function(_)));
+    }
+
+    #[test]
+    fn parses_call_expression_statement() {
+        let src = "print(1 + 2);";
+        let tokens = Lexer::new(src).lex().expect("tokens");
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().expect("program");
+        let StmtKind::Expr(expr) = &program.statements[0].kind else {
+            panic!("expected expr stmt");
+        };
+        assert!(matches!(expr.kind, ExprKind::Call { .. }));
+    }
+
+    #[test]
+    fn recovers_multiple_errors() {
+        let src = "let x: Int = ; let y: String = ;";
+        let tokens = Lexer::new(src).lex().expect("tokens");
+        let mut parser = Parser::new(tokens);
+        let errors = parser.parse_program().expect_err("errors");
+        assert!(errors.len() >= 2);
     }
 }

@@ -42,9 +42,7 @@ impl MuninnError {
         } else {
             self.span.width()
         };
-        let width = raw_width
-            .max(1)
-            .min(line_len.saturating_sub(start_column).max(1));
+        let width = raw_width.max(1).min(line_len.saturating_sub(start_column).max(1));
         let marker = format!("{}{}", " ".repeat(start_column), "^".repeat(width));
 
         let mut rendered = format!(

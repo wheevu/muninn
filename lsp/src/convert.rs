@@ -1,74 +1,51 @@
 use muninn::error::MuninnError;
+use muninn::source::offset_to_utf16_position;
 use muninn::span::Span;
-use tower_lsp::lsp_types::{
-    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, Position, Range, Url,
-};
+use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
 
-pub fn span_to_range(span: Span) -> Range {
-    let start = Position {
-        line: span.line.saturating_sub(1) as u32,
-        character: span.column.saturating_sub(1) as u32,
-    };
-    let mut end = Position {
-        line: span.end_line.saturating_sub(1) as u32,
-        character: span.end_column.saturating_sub(1) as u32,
-    };
+pub fn span_to_range(source: &str, line_starts: &[usize], span: Span) -> Range {
+    let (start_line, start_character) = offset_to_utf16_position(source, line_starts, span.offset);
+    let (mut end_line, mut end_character) = offset_to_utf16_position(
+        source,
+        line_starts,
+        span.end_offset.max(span.offset + 1),
+    );
 
-    if end.line < start.line || (end.line == start.line && end.character < start.character) {
-        end = start;
+    if end_line < start_line || (end_line == start_line && end_character < start_character) {
+        end_line = start_line;
+        end_character = start_character.saturating_add(1);
     }
 
-    if end == start {
-        end.character = end.character.saturating_add(1);
+    Range {
+        start: Position {
+            line: start_line,
+            character: start_character,
+        },
+        end: Position {
+            line: end_line,
+            character: end_character,
+        },
     }
-
-    Range { start, end }
 }
 
-pub fn errors_to_diagnostics(uri: &Url, errors: &[MuninnError]) -> Vec<Diagnostic> {
+pub fn errors_to_diagnostics(
+    source: &str,
+    line_starts: &[usize],
+    _uri: &Url,
+    errors: &[MuninnError],
+) -> Vec<Diagnostic> {
     errors
         .iter()
-        .map(|error| error_to_diagnostic(uri, error))
+        .map(|error| Diagnostic {
+            range: span_to_range(source, line_starts, error.span),
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: None,
+            code_description: None,
+            source: Some(format!("muninn-{}", error.phase)),
+            message: error.message.clone(),
+            related_information: None,
+            tags: None,
+            data: None,
+        })
         .collect()
-}
-
-fn phase_severity(phase: &str) -> DiagnosticSeverity {
-    match phase {
-        "lexer" | "parser" | "desugar" | "typecheck" | "compiler" | "vm" => {
-            DiagnosticSeverity::ERROR
-        }
-        _ => DiagnosticSeverity::ERROR,
-    }
-}
-
-fn error_to_diagnostic(uri: &Url, error: &MuninnError) -> Diagnostic {
-    let related_information = if error.notes.is_empty() {
-        None
-    } else {
-        Some(
-            error
-                .notes
-                .iter()
-                .map(|note| DiagnosticRelatedInformation {
-                    location: Location {
-                        uri: uri.clone(),
-                        range: span_to_range(error.span),
-                    },
-                    message: note.clone(),
-                })
-                .collect(),
-        )
-    };
-
-    Diagnostic {
-        range: span_to_range(error.span),
-        severity: Some(phase_severity(error.phase)),
-        code: None,
-        code_description: None,
-        source: Some(format!("muninn-{}", error.phase)),
-        message: error.message.clone(),
-        related_information,
-        tags: None,
-        data: None,
-    }
 }

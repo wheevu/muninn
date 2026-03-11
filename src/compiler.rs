@@ -1,802 +1,320 @@
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use crate::ast::{
-    AssignTarget, BinaryOp, BlockExpr, Expr, FunctionDecl, Program, Stmt, UnaryOp, VecBinaryMode,
+    BinaryOp, Expr, ExprKind, FunctionDecl, Program, Stmt, StmtKind, TypeExpr, UnaryOp,
 };
-use crate::bytecode::{BytecodeModule, Chunk, ClassBytecode, Constant, FunctionBytecode, OpCode};
+use crate::bytecode::{BytecodeModule, Chunk, Constant, FunctionBytecode, OpCode};
 use crate::error::MuninnError;
 use crate::span::Span;
 
 pub fn compile_program(program: &Program) -> Result<BytecodeModule, Vec<MuninnError>> {
     let mut compiler = ModuleCompiler::new();
-    match compiler.compile(program) {
-        Ok(module) => Ok(module),
-        Err(errors) => Err(errors),
-    }
+    compiler.compile(program);
+    compiler.finish()
 }
 
 struct ModuleCompiler {
     module: BytecodeModule,
+    function_ids: HashMap<String, usize>,
     errors: Vec<MuninnError>,
-    temp_counter: usize,
 }
 
 impl ModuleCompiler {
     fn new() -> Self {
         Self {
             module: BytecodeModule::new(),
+            function_ids: HashMap::new(),
             errors: Vec::new(),
-            temp_counter: 0,
         }
     }
 
-    fn compile(&mut self, program: &Program) -> Result<BytecodeModule, Vec<MuninnError>> {
-        let mut main_compiler = FunctionCompiler::new("__main".to_string(), 0, false);
-        for stmt in &program.statements {
-            self.compile_stmt(&mut main_compiler, stmt);
-        }
-        main_compiler.emit_op(OpCode::Nil);
-        main_compiler.emit_op(OpCode::Return);
-
-        let main_id = self.push_function(main_compiler.finish());
-        self.module.entry_function = main_id;
-
+    fn finish(self) -> Result<BytecodeModule, Vec<MuninnError>> {
         if self.errors.is_empty() {
-            Ok(self.module.clone())
+            Ok(self.module)
         } else {
-            Err(std::mem::take(&mut self.errors))
+            Err(self.errors)
         }
+    }
+
+    fn compile(&mut self, program: &Program) {
+        for statement in &program.statements {
+            if let StmtKind::Function(function) = &statement.kind {
+                let id = self.compile_function(function);
+                self.function_ids.insert(function.name.clone(), id);
+            }
+        }
+
+        let mut entry = FunctionCompiler::new("<entry>".to_string(), 0, false);
+        for statement in &program.statements {
+            if let StmtKind::Function(function) = &statement.kind {
+                let Some(function_id) = self.function_ids.get(&function.name).copied() else {
+                    continue;
+                };
+                if let Err(error) = entry.emit_constant(Constant::Function(function_id), function.span) {
+                    self.errors.push(error);
+                }
+                if let Err(error) = entry.emit_named_op(OpCode::DefineGlobal, &function.name, function.span) {
+                    self.errors.push(error);
+                }
+            }
+        }
+
+        let runtime_statements = program
+            .statements
+            .iter()
+            .filter(|statement| !matches!(statement.kind, StmtKind::Function(_)))
+            .collect::<Vec<_>>();
+        for (index, statement) in runtime_statements.iter().enumerate() {
+            let is_last = index + 1 == runtime_statements.len();
+            if is_last && let StmtKind::Expr(expr) = &statement.kind {
+                self.compile_expr(&mut entry, expr);
+                entry.emit_op(OpCode::Return, statement.span);
+                self.module.entry_function = self.push_function(entry.finish());
+                return;
+            }
+            self.compile_stmt(&mut entry, statement);
+        }
+        entry.emit_op(OpCode::Nil, Span::default());
+        entry.emit_op(OpCode::Return, Span::default());
+        self.module.entry_function = self.push_function(entry.finish());
+    }
+
+    fn compile_function(&mut self, function: &FunctionDecl) -> usize {
+        let expects_return_value = function.return_type != TypeExpr::Void;
+        let mut compiler = FunctionCompiler::new(
+            function.name.clone(),
+            function.params.len(),
+            expects_return_value,
+        );
+        for param in &function.params {
+            compiler.define_parameter(param.name.clone());
+        }
+        for statement in &function.body.statements {
+            self.compile_stmt(&mut compiler, statement);
+        }
+        compiler.emit_op(OpCode::Nil, function.span);
+        compiler.emit_op(OpCode::Return, function.span);
+        self.push_function(compiler.finish())
     }
 
     fn push_function(&mut self, function: FunctionBytecode) -> usize {
-        self.module.functions.push(Rc::new(function));
+        self.module.functions.push(function);
         self.module.functions.len() - 1
     }
 
-    fn make_constant(
-        &mut self,
-        compiler: &mut FunctionCompiler,
-        constant: Constant,
-        span: Span,
-    ) -> Option<u16> {
-        match compiler.make_constant(constant) {
-            Ok(idx) => Some(idx),
-            Err(message) => {
-                self.errors
-                    .push(MuninnError::new("compiler", message, span));
-                None
-            }
-        }
-    }
-
     fn compile_stmt(&mut self, compiler: &mut FunctionCompiler, stmt: &Stmt) {
-        match stmt {
-            Stmt::Let {
+        match &stmt.kind {
+            StmtKind::Let {
                 name,
                 initializer,
-                span,
                 ..
             } => {
                 self.compile_expr(compiler, initializer);
                 if compiler.scope_depth == 0 {
-                    let Some(name_idx) =
-                        self.make_constant(compiler, Constant::String(name.clone()), *span)
-                    else {
-                        return;
-                    };
-                    compiler.emit_op(OpCode::DefineGlobal);
-                    compiler.emit_u16(name_idx);
+                    if let Err(error) = compiler.emit_named_op(OpCode::DefineGlobal, name, stmt.span) {
+                        self.errors.push(error);
+                    }
                 } else {
-                    let slot = compiler.declare_local(name.clone(), *span);
-                    compiler.emit_op(OpCode::SetLocal);
-                    compiler.emit_u16(slot as u16);
-                    compiler.emit_op(OpCode::Pop);
+                    let slot = compiler.define_local(name.clone());
+                    compiler.emit_slot_op(OpCode::SetLocal, slot, stmt.span);
                 }
             }
-            Stmt::Function(function) => {
-                let function_id = self.compile_function(function, false);
-                let Some(const_idx) =
-                    self.make_constant(compiler, Constant::Function(function_id), function.span)
-                else {
-                    return;
-                };
-                compiler.emit_op(OpCode::Constant);
-                compiler.emit_u16(const_idx);
-
-                if compiler.scope_depth == 0 {
-                    let Some(name_idx) = self.make_constant(
-                        compiler,
-                        Constant::String(function.name.clone()),
-                        function.span,
-                    ) else {
-                        return;
-                    };
-                    compiler.emit_op(OpCode::DefineGlobal);
-                    compiler.emit_u16(name_idx);
-                } else {
-                    let slot = compiler.declare_local(function.name.clone(), function.span);
-                    compiler.emit_op(OpCode::SetLocal);
-                    compiler.emit_u16(slot as u16);
-                    compiler.emit_op(OpCode::Pop);
-                }
-            }
-            Stmt::Class(class) => {
-                let mut method_map = HashMap::new();
-                let mut init = None;
-                for method in &class.methods {
-                    let id = self.compile_function(method, true);
-                    method_map.insert(method.name.clone(), id);
-                }
-                if let Some(init_fn) = &class.init {
-                    init = Some(self.compile_function(init_fn, true));
-                }
-
-                let class_id = self.module.classes.len();
-                self.module.classes.push(Rc::new(ClassBytecode {
-                    name: class.name.clone(),
-                    fields: class.fields.iter().map(|f| f.name.clone()).collect(),
-                    methods: method_map,
-                    init,
-                }));
-
-                let Some(class_const) =
-                    self.make_constant(compiler, Constant::Class(class_id), class.span)
-                else {
-                    return;
-                };
-                compiler.emit_op(OpCode::Constant);
-                compiler.emit_u16(class_const);
-
-                if compiler.scope_depth == 0 {
-                    let Some(name_idx) = self.make_constant(
-                        compiler,
-                        Constant::String(class.name.clone()),
-                        class.span,
-                    ) else {
-                        return;
-                    };
-                    compiler.emit_op(OpCode::DefineGlobal);
-                    compiler.emit_u16(name_idx);
-                } else {
-                    let slot = compiler.declare_local(class.name.clone(), class.span);
-                    compiler.emit_op(OpCode::SetLocal);
-                    compiler.emit_u16(slot as u16);
-                    compiler.emit_op(OpCode::Pop);
-                }
-            }
-            Stmt::Enum(_) => {}
-            Stmt::Return { value, .. } => {
+            StmtKind::Function(_) => {}
+            StmtKind::Return(value) => {
                 if let Some(value) = value {
                     self.compile_expr(compiler, value);
                 } else {
-                    compiler.emit_op(OpCode::Nil);
+                    compiler.emit_op(OpCode::Nil, stmt.span);
                 }
-                compiler.emit_op(OpCode::Return);
+                compiler.emit_op(OpCode::Return, stmt.span);
             }
-            Stmt::Break { span } => {
-                if let Some(jump) = compiler.emit_break_jump() {
-                    compiler.register_break_jump(jump);
-                } else {
-                    self.errors.push(MuninnError::new(
-                        "compiler",
-                        "break can only be used inside loops",
-                        *span,
-                    ));
-                }
-            }
-            Stmt::Continue { span } => {
-                if let Some(loop_start) = compiler.current_loop_start() {
-                    compiler.emit_loop(loop_start);
-                } else {
-                    self.errors.push(MuninnError::new(
-                        "compiler",
-                        "continue can only be used inside loops",
-                        *span,
-                    ));
-                }
-            }
-            Stmt::While {
-                condition, body, ..
-            } => {
+            StmtKind::While { condition, body } => {
                 let loop_start = compiler.current_offset();
-                compiler.begin_loop(loop_start);
                 self.compile_expr(compiler, condition);
-                let exit_jump = compiler.emit_jump(OpCode::JumpIfFalse);
-                compiler.emit_op(OpCode::Pop);
-                self.compile_block(compiler, body, false);
-                compiler.emit_loop(loop_start);
-                compiler.patch_jump(exit_jump);
-                compiler.emit_op(OpCode::Pop);
-                if let Some(break_jumps) = compiler.end_loop() {
-                    for jump in break_jumps {
-                        compiler.patch_jump(jump);
-                    }
+                let exit_jump = compiler.emit_jump(OpCode::JumpIfFalse, stmt.span);
+                compiler.emit_op(OpCode::Pop, stmt.span);
+                compiler.enter_scope();
+                for body_stmt in &body.statements {
+                    self.compile_stmt(compiler, body_stmt);
                 }
+                compiler.exit_scope();
+                compiler.emit_loop(loop_start, stmt.span);
+                compiler.patch_jump(exit_jump, stmt.span, &mut self.errors);
+                compiler.emit_op(OpCode::Pop, stmt.span);
             }
-            Stmt::If {
+            StmtKind::If {
                 condition,
                 then_branch,
                 else_branch,
-                ..
             } => {
                 self.compile_expr(compiler, condition);
-                let else_jump = compiler.emit_jump(OpCode::JumpIfFalse);
-                compiler.emit_op(OpCode::Pop);
-                self.compile_block(compiler, then_branch, false);
-
+                let else_jump = compiler.emit_jump(OpCode::JumpIfFalse, stmt.span);
+                compiler.emit_op(OpCode::Pop, stmt.span);
+                compiler.enter_scope();
+                for then_stmt in &then_branch.statements {
+                    self.compile_stmt(compiler, then_stmt);
+                }
+                compiler.exit_scope();
+                let end_jump = else_branch.as_ref().map(|_| compiler.emit_jump(OpCode::Jump, stmt.span));
+                compiler.patch_jump(else_jump, stmt.span, &mut self.errors);
+                compiler.emit_op(OpCode::Pop, stmt.span);
                 if let Some(else_branch) = else_branch {
-                    let end_jump = compiler.emit_jump(OpCode::Jump);
-                    compiler.patch_jump(else_jump);
-                    compiler.emit_op(OpCode::Pop);
-                    self.compile_block(compiler, else_branch, false);
-                    compiler.patch_jump(end_jump);
-                } else {
-                    compiler.patch_jump(else_jump);
-                    compiler.emit_op(OpCode::Pop);
+                    compiler.enter_scope();
+                    for else_stmt in &else_branch.statements {
+                        self.compile_stmt(compiler, else_stmt);
+                    }
+                    compiler.exit_scope();
+                }
+                if let Some(end_jump) = end_jump {
+                    compiler.patch_jump(end_jump, stmt.span, &mut self.errors);
                 }
             }
-            Stmt::ForRange { span, .. } => {
-                self.errors.push(MuninnError::new(
-                    "compiler",
-                    "for-range should be desugared before compilation",
-                    *span,
-                ));
+            StmtKind::Assign { name, value, .. } => {
+                self.compile_expr(compiler, value);
+                if let Some(slot) = compiler.resolve_local(name) {
+                    compiler.emit_slot_op(OpCode::SetLocal, slot, stmt.span);
+                } else if let Err(error) = compiler.emit_named_op(OpCode::SetGlobal, name, stmt.span) {
+                    self.errors.push(error);
+                }
             }
-            Stmt::Expression { expr, .. } => {
+            StmtKind::Expr(expr) => {
                 self.compile_expr(compiler, expr);
-                compiler.emit_op(OpCode::Pop);
+                compiler.emit_op(OpCode::Pop, stmt.span);
             }
-        }
-    }
-
-    fn compile_function(&mut self, function: &FunctionDecl, is_method: bool) -> usize {
-        let arity = function.params.len() + usize::from(is_method);
-        let mut fn_compiler = FunctionCompiler::new(function.name.clone(), arity, is_method);
-        if is_method {
-            fn_compiler.declare_local("self".to_string(), function.span);
-        }
-        for param in &function.params {
-            fn_compiler.declare_local(param.name.clone(), param.span);
-        }
-
-        self.compile_block(&mut fn_compiler, &function.body, true);
-        fn_compiler.emit_op(OpCode::Return);
-
-        fn_compiler.emit_op(OpCode::Nil);
-        fn_compiler.emit_op(OpCode::Return);
-        self.push_function(fn_compiler.finish())
-    }
-
-    fn compile_block(
-        &mut self,
-        compiler: &mut FunctionCompiler,
-        block: &BlockExpr,
-        keep_value: bool,
-    ) {
-        compiler.begin_scope();
-        for stmt in &block.statements {
-            self.compile_stmt(compiler, stmt);
-        }
-        if let Some(expr) = &block.tail {
-            self.compile_expr(compiler, expr);
-        } else {
-            compiler.emit_op(OpCode::Nil);
-        }
-        compiler.end_scope();
-
-        if !keep_value {
-            compiler.emit_op(OpCode::Pop);
         }
     }
 
     fn compile_expr(&mut self, compiler: &mut FunctionCompiler, expr: &Expr) {
-        match expr {
-            Expr::Int(value, span) => {
-                let Some(idx) = self.make_constant(compiler, Constant::Int(*value), *span) else {
-                    compiler.emit_op(OpCode::Nil);
-                    return;
-                };
-                compiler.emit_op(OpCode::Constant);
-                compiler.emit_u16(idx);
+        match &expr.kind {
+            ExprKind::Int(value) => {
+                if let Err(error) = compiler.emit_constant(Constant::Int(*value), expr.span) {
+                    self.errors.push(error);
+                }
             }
-            Expr::Float(value, span) => {
-                let Some(idx) = self.make_constant(compiler, Constant::Float(*value), *span) else {
-                    compiler.emit_op(OpCode::Nil);
-                    return;
-                };
-                compiler.emit_op(OpCode::Constant);
-                compiler.emit_u16(idx);
+            ExprKind::Float(value) => {
+                if let Err(error) = compiler.emit_constant(Constant::Float(*value), expr.span) {
+                    self.errors.push(error);
+                }
             }
-            Expr::Bool(true, _) => compiler.emit_op(OpCode::True),
-            Expr::Bool(false, _) => compiler.emit_op(OpCode::False),
-            Expr::String(value, span) => {
-                let Some(idx) =
-                    self.make_constant(compiler, Constant::String(value.clone()), *span)
-                else {
-                    compiler.emit_op(OpCode::Nil);
-                    return;
-                };
-                compiler.emit_op(OpCode::Constant);
-                compiler.emit_u16(idx);
+            ExprKind::Bool(value) => {
+                compiler.emit_op(if *value { OpCode::True } else { OpCode::False }, expr.span);
             }
-            Expr::Variable(name, span) => {
+            ExprKind::String(value) => {
+                if let Err(error) = compiler.emit_constant(Constant::String(value.clone()), expr.span) {
+                    self.errors.push(error);
+                }
+            }
+            ExprKind::Variable(name) => {
                 if let Some(slot) = compiler.resolve_local(name) {
-                    compiler.emit_op(OpCode::GetLocal);
-                    compiler.emit_u16(slot as u16);
-                } else {
-                    let Some(idx) =
-                        self.make_constant(compiler, Constant::String(name.clone()), *span)
-                    else {
-                        compiler.emit_op(OpCode::Nil);
-                        return;
-                    };
-                    compiler.emit_op(OpCode::GetGlobal);
-                    compiler.emit_u16(idx);
-                }
-
-                if name == "self" && compiler.resolve_local(name).is_none() {
-                    self.errors.push(MuninnError::new(
-                        "compiler",
-                        "'self' is only available inside methods",
-                        *span,
-                    ));
+                    compiler.emit_slot_op(OpCode::GetLocal, slot, expr.span);
+                } else if let Err(error) = compiler.emit_named_op(OpCode::GetGlobal, name, expr.span) {
+                    self.errors.push(error);
                 }
             }
-            Expr::SelfRef(span) => {
-                if let Some(slot) = compiler.resolve_local("self") {
-                    compiler.emit_op(OpCode::GetLocal);
-                    compiler.emit_u16(slot as u16);
-                } else {
-                    self.errors.push(MuninnError::new(
-                        "compiler",
-                        "'self' is only available inside methods",
-                        *span,
-                    ));
-                }
-            }
-            Expr::ArrayLiteral(items, _) => {
-                if items.len() > u16::MAX as usize {
-                    self.errors.push(MuninnError::new(
-                        "compiler",
-                        format!(
-                            "array literal has {} items, exceeding {}",
-                            items.len(),
-                            u16::MAX
-                        ),
-                        expr.span(),
-                    ));
-                    return;
-                }
-                for item in items {
-                    self.compile_expr(compiler, item);
-                }
-                compiler.emit_op(OpCode::BuildArray);
-                compiler.emit_u16(items.len() as u16);
-            }
-            Expr::Block(block) => self.compile_block(compiler, block, true),
-            Expr::Grouping(inner, _) => self.compile_expr(compiler, inner),
-            Expr::Unary { op, expr, .. } => {
-                self.compile_expr(compiler, expr);
+            ExprKind::Grouping(inner) => self.compile_expr(compiler, inner),
+            ExprKind::Unary { op, expr: inner } => {
+                self.compile_expr(compiler, inner);
                 match op {
-                    UnaryOp::Negate => compiler.emit_op(OpCode::Negate),
-                    UnaryOp::Not => compiler.emit_op(OpCode::Not),
+                    UnaryOp::Negate => compiler.emit_op(OpCode::Negate, expr.span),
+                    UnaryOp::Not => compiler.emit_op(OpCode::Not, expr.span),
                 }
             }
-            Expr::Binary {
-                left, op, right, ..
-            } => match op {
+            ExprKind::Binary { left, op, right } => match op {
                 BinaryOp::And => {
                     self.compile_expr(compiler, left);
-                    let false_jump = compiler.emit_jump(OpCode::JumpIfFalse);
-                    compiler.emit_op(OpCode::Pop);
+                    let end_jump = compiler.emit_jump(OpCode::JumpIfFalse, expr.span);
+                    compiler.emit_op(OpCode::Pop, expr.span);
                     self.compile_expr(compiler, right);
-                    compiler.patch_jump(false_jump);
+                    compiler.patch_jump(end_jump, expr.span, &mut self.errors);
                 }
                 BinaryOp::Or => {
                     self.compile_expr(compiler, left);
-                    let false_jump = compiler.emit_jump(OpCode::JumpIfFalse);
-                    let end_jump = compiler.emit_jump(OpCode::Jump);
-                    compiler.patch_jump(false_jump);
-                    compiler.emit_op(OpCode::Pop);
+                    let else_jump = compiler.emit_jump(OpCode::JumpIfFalse, expr.span);
+                    let end_jump = compiler.emit_jump(OpCode::Jump, expr.span);
+                    compiler.patch_jump(else_jump, expr.span, &mut self.errors);
+                    compiler.emit_op(OpCode::Pop, expr.span);
                     self.compile_expr(compiler, right);
-                    compiler.patch_jump(end_jump);
+                    compiler.patch_jump(end_jump, expr.span, &mut self.errors);
                 }
-                BinaryOp::Add
-                | BinaryOp::Subtract
-                | BinaryOp::Multiply
-                | BinaryOp::Divide
-                | BinaryOp::Equal
-                | BinaryOp::NotEqual
-                | BinaryOp::Greater
-                | BinaryOp::GreaterEqual
-                | BinaryOp::Less
-                | BinaryOp::LessEqual => {
+                BinaryOp::NotEqual => {
                     self.compile_expr(compiler, left);
                     self.compile_expr(compiler, right);
-                    match op {
-                        BinaryOp::Add => compiler.emit_op(OpCode::Add),
-                        BinaryOp::Subtract => compiler.emit_op(OpCode::Subtract),
-                        BinaryOp::Multiply => compiler.emit_op(OpCode::Multiply),
-                        BinaryOp::Divide => compiler.emit_op(OpCode::Divide),
-                        BinaryOp::Equal => compiler.emit_op(OpCode::Equal),
-                        BinaryOp::NotEqual => {
-                            compiler.emit_op(OpCode::Equal);
-                            compiler.emit_op(OpCode::Not);
-                        }
-                        BinaryOp::Greater => compiler.emit_op(OpCode::Greater),
-                        BinaryOp::Less => compiler.emit_op(OpCode::Less),
-                        BinaryOp::GreaterEqual => {
-                            compiler.emit_op(OpCode::Less);
-                            compiler.emit_op(OpCode::Not);
-                        }
-                        BinaryOp::LessEqual => {
-                            compiler.emit_op(OpCode::Greater);
-                            compiler.emit_op(OpCode::Not);
-                        }
-                        BinaryOp::And | BinaryOp::Or => unreachable!(),
-                    }
+                    compiler.emit_op(OpCode::Equal, expr.span);
+                    compiler.emit_op(OpCode::Not, expr.span);
+                }
+                BinaryOp::GreaterEqual => {
+                    self.compile_expr(compiler, left);
+                    self.compile_expr(compiler, right);
+                    compiler.emit_op(OpCode::Less, expr.span);
+                    compiler.emit_op(OpCode::Not, expr.span);
+                }
+                BinaryOp::LessEqual => {
+                    self.compile_expr(compiler, left);
+                    self.compile_expr(compiler, right);
+                    compiler.emit_op(OpCode::Greater, expr.span);
+                    compiler.emit_op(OpCode::Not, expr.span);
+                }
+                _ => {
+                    self.compile_expr(compiler, left);
+                    self.compile_expr(compiler, right);
+                    let opcode = match op {
+                        BinaryOp::Add => OpCode::Add,
+                        BinaryOp::Subtract => OpCode::Subtract,
+                        BinaryOp::Multiply => OpCode::Multiply,
+                        BinaryOp::Divide => OpCode::Divide,
+                        BinaryOp::Equal => OpCode::Equal,
+                        BinaryOp::Greater => OpCode::Greater,
+                        BinaryOp::Less => OpCode::Less,
+                        BinaryOp::NotEqual
+                        | BinaryOp::GreaterEqual
+                        | BinaryOp::LessEqual
+                        | BinaryOp::And
+                        | BinaryOp::Or => unreachable!(),
+                    };
+                    compiler.emit_op(opcode, expr.span);
                 }
             },
-            Expr::VecBinary {
-                left,
-                op,
-                right,
-                len,
-                mode,
-                span,
-            } => self.compile_vec_binary(compiler, left, *op, right, *len, *mode, *span),
-            Expr::If {
-                condition,
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                self.compile_expr(compiler, condition);
-                let else_jump = compiler.emit_jump(OpCode::JumpIfFalse);
-                compiler.emit_op(OpCode::Pop);
-                self.compile_block(compiler, then_branch, true);
-                let end_jump = compiler.emit_jump(OpCode::Jump);
-                compiler.patch_jump(else_jump);
-                compiler.emit_op(OpCode::Pop);
-                self.compile_block(compiler, else_branch, true);
-                compiler.patch_jump(end_jump);
-            }
-            Expr::Unless { span, .. } => self.errors.push(MuninnError::new(
-                "compiler",
-                "unless should be desugared before compilation",
-                *span,
-            )),
-            Expr::Match { span, .. } => self.errors.push(MuninnError::new(
-                "compiler",
-                "match should be desugared before compilation",
-                *span,
-            )),
-            Expr::Call { callee, args, .. } => {
-                if let Expr::Property { object, name, .. } = callee.as_ref() {
-                    self.compile_expr(compiler, object);
-                    for arg in args {
-                        self.compile_expr(compiler, arg);
-                    }
-                    let Some(name_idx) =
-                        self.make_constant(compiler, Constant::String(name.clone()), callee.span())
-                    else {
-                        compiler.emit_op(OpCode::Nil);
-                        return;
-                    };
-                    compiler.emit_op(OpCode::Invoke);
-                    compiler.emit_u16(name_idx);
-                    compiler.emit_u8(args.len() as u8);
-                } else {
-                    self.compile_expr(compiler, callee);
-                    for arg in args {
-                        self.compile_expr(compiler, arg);
-                    }
-                    compiler.emit_op(OpCode::Call);
-                    compiler.emit_u8(args.len() as u8);
+            ExprKind::Call { callee, args } => {
+                self.compile_expr(compiler, callee);
+                for arg in args {
+                    self.compile_expr(compiler, arg);
                 }
-            }
-            Expr::Pipeline { span, .. } => self.errors.push(MuninnError::new(
-                "compiler",
-                "pipeline should be desugared before compilation",
-                *span,
-            )),
-            Expr::EnumVariant {
-                enum_name,
-                variant_name,
-                span,
-            } => {
-                let global_name = format!("{}.{}", enum_name, variant_name);
-                let Some(idx) = self.make_constant(compiler, Constant::String(global_name), *span)
-                else {
-                    compiler.emit_op(OpCode::Nil);
-                    return;
-                };
-                compiler.emit_op(OpCode::GetGlobal);
-                compiler.emit_u16(idx);
-            }
-            Expr::Property { object, name, span } => {
-                self.compile_expr(compiler, object);
-                let Some(name_idx) =
-                    self.make_constant(compiler, Constant::String(name.clone()), *span)
-                else {
-                    compiler.emit_op(OpCode::Nil);
-                    return;
-                };
-                compiler.emit_op(OpCode::GetProperty);
-                compiler.emit_u16(name_idx);
-            }
-            Expr::Index { target, index, .. } => {
-                self.compile_expr(compiler, target);
-                self.compile_expr(compiler, index);
-                compiler.emit_op(OpCode::GetIndex);
-            }
-            Expr::GridIndex { span, .. } => self.errors.push(MuninnError::new(
-                "compiler",
-                "grid index should be desugared before compilation",
-                *span,
-            )),
-            Expr::Assign {
-                target,
-                value,
-                span,
-            } => self.compile_assignment(compiler, target, value, *span),
-            Expr::Try { span, .. } => self.errors.push(MuninnError::new(
-                "compiler",
-                "'?' should be desugared before compilation",
-                *span,
-            )),
-            Expr::StringInterpolation { span, .. } => self.errors.push(MuninnError::new(
-                "compiler",
-                "string interpolation should be desugared before compilation",
-                *span,
-            )),
-        }
-    }
-
-    fn compile_vec_binary(
-        &mut self,
-        compiler: &mut FunctionCompiler,
-        left: &Expr,
-        op: BinaryOp,
-        right: &Expr,
-        len: usize,
-        mode: VecBinaryMode,
-        span: Span,
-    ) {
-        if !matches!(
-            op,
-            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide
-        ) {
-            self.errors.push(MuninnError::new(
-                "compiler",
-                "vectorized op only supports +, -, *, /",
-                span,
-            ));
-            return;
-        }
-
-        if len > u16::MAX as usize {
-            self.errors.push(MuninnError::new(
-                "compiler",
-                format!(
-                    "vectorized operation length {} exceeds maximum {}",
-                    len,
-                    u16::MAX
-                ),
-                span,
-            ));
-            return;
-        }
-
-        compiler.begin_scope();
-        let left_slot = compiler.declare_local(self.next_temp_name("vec_left"), span);
-        let right_slot = compiler.declare_local(self.next_temp_name("vec_right"), span);
-        let result_slot = compiler.declare_local(self.next_temp_name("vec_out"), span);
-        let index_slot = compiler.declare_local(self.next_temp_name("vec_i"), span);
-
-        self.compile_expr(compiler, left);
-        compiler.emit_op(OpCode::SetLocal);
-        compiler.emit_u16(left_slot as u16);
-        compiler.emit_op(OpCode::Pop);
-
-        self.compile_expr(compiler, right);
-        compiler.emit_op(OpCode::SetLocal);
-        compiler.emit_u16(right_slot as u16);
-        compiler.emit_op(OpCode::Pop);
-
-        compiler.emit_op(OpCode::BuildArrayNil);
-        compiler.emit_u16(len as u16);
-        compiler.emit_op(OpCode::SetLocal);
-        compiler.emit_u16(result_slot as u16);
-        compiler.emit_op(OpCode::Pop);
-
-        let Some(zero_idx) = self.make_constant(compiler, Constant::Int(0), span) else {
-            compiler.end_scope();
-            compiler.emit_op(OpCode::Nil);
-            return;
-        };
-        compiler.emit_op(OpCode::Constant);
-        compiler.emit_u16(zero_idx);
-        compiler.emit_op(OpCode::SetLocal);
-        compiler.emit_u16(index_slot as u16);
-        compiler.emit_op(OpCode::Pop);
-
-        let loop_start = compiler.current_offset();
-        compiler.emit_op(OpCode::GetLocal);
-        compiler.emit_u16(index_slot as u16);
-        let Some(len_idx) = self.make_constant(compiler, Constant::Int(len as i64), span) else {
-            compiler.end_scope();
-            compiler.emit_op(OpCode::Nil);
-            return;
-        };
-        compiler.emit_op(OpCode::Constant);
-        compiler.emit_u16(len_idx);
-        compiler.emit_op(OpCode::Less);
-
-        let exit_jump = compiler.emit_jump(OpCode::JumpIfFalse);
-        compiler.emit_op(OpCode::Pop);
-
-        compiler.emit_op(OpCode::GetLocal);
-        compiler.emit_u16(result_slot as u16);
-        compiler.emit_op(OpCode::GetLocal);
-        compiler.emit_u16(index_slot as u16);
-
-        match mode {
-            VecBinaryMode::ArrayArray => {
-                compiler.emit_op(OpCode::GetLocal);
-                compiler.emit_u16(left_slot as u16);
-                compiler.emit_op(OpCode::GetLocal);
-                compiler.emit_u16(index_slot as u16);
-                compiler.emit_op(OpCode::GetIndex);
-
-                compiler.emit_op(OpCode::GetLocal);
-                compiler.emit_u16(right_slot as u16);
-                compiler.emit_op(OpCode::GetLocal);
-                compiler.emit_u16(index_slot as u16);
-                compiler.emit_op(OpCode::GetIndex);
-            }
-            VecBinaryMode::ArrayScalarRight => {
-                compiler.emit_op(OpCode::GetLocal);
-                compiler.emit_u16(left_slot as u16);
-                compiler.emit_op(OpCode::GetLocal);
-                compiler.emit_u16(index_slot as u16);
-                compiler.emit_op(OpCode::GetIndex);
-
-                compiler.emit_op(OpCode::GetLocal);
-                compiler.emit_u16(right_slot as u16);
-            }
-            VecBinaryMode::ScalarArrayLeft => {
-                compiler.emit_op(OpCode::GetLocal);
-                compiler.emit_u16(left_slot as u16);
-
-                compiler.emit_op(OpCode::GetLocal);
-                compiler.emit_u16(right_slot as u16);
-                compiler.emit_op(OpCode::GetLocal);
-                compiler.emit_u16(index_slot as u16);
-                compiler.emit_op(OpCode::GetIndex);
+                compiler.emit_op(OpCode::Call, expr.span);
+                compiler.emit_u8(args.len() as u8, expr.span);
             }
         }
-
-        match op {
-            BinaryOp::Add => compiler.emit_op(OpCode::Add),
-            BinaryOp::Subtract => compiler.emit_op(OpCode::Subtract),
-            BinaryOp::Multiply => compiler.emit_op(OpCode::Multiply),
-            BinaryOp::Divide => compiler.emit_op(OpCode::Divide),
-            _ => unreachable!(),
-        }
-
-        compiler.emit_op(OpCode::SetIndex);
-        compiler.emit_op(OpCode::Pop);
-
-        compiler.emit_op(OpCode::GetLocal);
-        compiler.emit_u16(index_slot as u16);
-        let Some(one_idx) = self.make_constant(compiler, Constant::Int(1), span) else {
-            compiler.end_scope();
-            compiler.emit_op(OpCode::Nil);
-            return;
-        };
-        compiler.emit_op(OpCode::Constant);
-        compiler.emit_u16(one_idx);
-        compiler.emit_op(OpCode::Add);
-        compiler.emit_op(OpCode::SetLocal);
-        compiler.emit_u16(index_slot as u16);
-        compiler.emit_op(OpCode::Pop);
-
-        compiler.emit_loop(loop_start);
-        compiler.patch_jump(exit_jump);
-        compiler.emit_op(OpCode::Pop);
-
-        compiler.emit_op(OpCode::GetLocal);
-        compiler.emit_u16(result_slot as u16);
-        compiler.end_scope();
-    }
-
-    fn compile_assignment(
-        &mut self,
-        compiler: &mut FunctionCompiler,
-        target: &AssignTarget,
-        value: &Expr,
-        span: Span,
-    ) {
-        match target {
-            AssignTarget::Variable(name, _) => {
-                self.compile_expr(compiler, value);
-                if let Some(slot) = compiler.resolve_local(name) {
-                    compiler.emit_op(OpCode::SetLocal);
-                    compiler.emit_u16(slot as u16);
-                } else {
-                    let Some(idx) =
-                        self.make_constant(compiler, Constant::String(name.clone()), span)
-                    else {
-                        compiler.emit_op(OpCode::Nil);
-                        return;
-                    };
-                    compiler.emit_op(OpCode::SetGlobal);
-                    compiler.emit_u16(idx);
-                }
-            }
-            AssignTarget::Property { object, name, .. } => {
-                self.compile_expr(compiler, object);
-                self.compile_expr(compiler, value);
-                let Some(idx) = self.make_constant(compiler, Constant::String(name.clone()), span)
-                else {
-                    compiler.emit_op(OpCode::Nil);
-                    return;
-                };
-                compiler.emit_op(OpCode::SetProperty);
-                compiler.emit_u16(idx);
-            }
-            AssignTarget::Index { target, index, .. } => {
-                self.compile_expr(compiler, target);
-                self.compile_expr(compiler, index);
-                self.compile_expr(compiler, value);
-                compiler.emit_op(OpCode::SetIndex);
-            }
-            AssignTarget::GridIndex { .. } => self.errors.push(MuninnError::new(
-                "compiler",
-                "grid assignment should be desugared before compilation",
-                span,
-            )),
-        }
-    }
-
-    fn next_temp_name(&mut self, prefix: &str) -> String {
-        let id = self.temp_counter;
-        self.temp_counter += 1;
-        format!("__{}_{}", prefix, id)
     }
 }
 
-#[derive(Clone)]
 struct FunctionCompiler {
     name: String,
     arity: usize,
+    expects_return_value: bool,
     chunk: Chunk,
-    scopes: Vec<HashMap<String, usize>>,
+    locals: Vec<Local>,
+    next_slot: usize,
+    max_slot: usize,
     scope_depth: usize,
-    next_local: usize,
-    max_local: usize,
-    loop_stack: Vec<LoopContext>,
 }
 
-#[derive(Clone)]
-struct LoopContext {
-    start: usize,
-    break_jumps: Vec<usize>,
+#[derive(Debug, Clone)]
+struct Local {
+    name: String,
+    depth: usize,
+    slot: usize,
 }
 
 impl FunctionCompiler {
-    fn new(name: String, arity: usize, _is_method: bool) -> Self {
+    fn new(name: String, arity: usize, expects_return_value: bool) -> Self {
         Self {
             name,
             arity,
+            expects_return_value,
             chunk: Chunk::new(),
-            scopes: vec![HashMap::new()],
+            locals: Vec::new(),
+            next_slot: 0,
+            max_slot: 0,
             scope_depth: 0,
-            next_local: 0,
-            max_local: 0,
-            loop_stack: Vec::new(),
         }
     }
 
@@ -804,152 +322,124 @@ impl FunctionCompiler {
         FunctionBytecode {
             name: self.name,
             arity: self.arity,
-            local_count: self.max_local.max(self.next_local),
+            local_count: self.max_slot,
+            expects_return_value: self.expects_return_value,
             chunk: self.chunk,
         }
     }
 
-    fn begin_scope(&mut self) {
-        self.scope_depth += 1;
-        self.scopes.push(HashMap::new());
+    fn define_parameter(&mut self, name: String) {
+        let slot = self.next_slot;
+        self.next_slot += 1;
+        self.max_slot = self.max_slot.max(self.next_slot);
+        self.locals.push(Local {
+            name,
+            depth: 0,
+            slot,
+        });
     }
 
-    fn end_scope(&mut self) {
-        self.scope_depth = self.scope_depth.saturating_sub(1);
-        if let Some(scope) = self.scopes.pop() {
-            self.next_local = self.next_local.saturating_sub(scope.len());
-        }
-    }
-
-    fn declare_local(&mut self, name: String, _span: Span) -> usize {
-        let slot = self.next_local;
-        assert!(
-            slot <= u16::MAX as usize,
-            "local variable slots exceed u16 operand capacity"
-        );
-        self.next_local += 1;
-        self.max_local = self.max_local.max(self.next_local);
-        self.scopes.last_mut().expect("scope").insert(name, slot);
+    fn define_local(&mut self, name: String) -> usize {
+        let slot = self.next_slot;
+        self.next_slot += 1;
+        self.max_slot = self.max_slot.max(self.next_slot);
+        self.locals.push(Local {
+            name,
+            depth: self.scope_depth,
+            slot,
+        });
         slot
     }
 
     fn resolve_local(&self, name: &str) -> Option<usize> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(slot) = scope.get(name) {
-                return Some(*slot);
-            }
+        self.locals
+            .iter()
+            .rev()
+            .find(|local| local.name == name)
+            .map(|local| local.slot)
+    }
+
+    fn enter_scope(&mut self) {
+        self.scope_depth += 1;
+    }
+
+    fn exit_scope(&mut self) {
+        while self
+            .locals
+            .last()
+            .is_some_and(|local| local.depth == self.scope_depth)
+        {
+            self.locals.pop();
         }
-        None
-    }
-
-    fn make_constant(&mut self, constant: Constant) -> Result<u16, String> {
-        self.chunk.add_constant(constant)
-    }
-
-    fn emit_op(&mut self, op: OpCode) {
-        self.chunk.write_op(op);
-    }
-
-    fn emit_u8(&mut self, value: u8) {
-        self.chunk.write_u8(value);
-    }
-
-    fn emit_u16(&mut self, value: u16) {
-        self.chunk.write_u16(value);
+        self.scope_depth = self.scope_depth.saturating_sub(1);
     }
 
     fn current_offset(&self) -> usize {
         self.chunk.code.len()
     }
 
-    fn emit_jump(&mut self, op: OpCode) -> usize {
-        self.emit_op(op);
-        self.emit_u16(u16::MAX);
-        self.chunk.code.len() - 2
+    fn emit_op(&mut self, op: OpCode, span: Span) {
+        self.chunk.write_op(op, span);
     }
 
-    fn patch_jump(&mut self, jump_operand_offset: usize) {
-        let jump = self.chunk.code.len() - jump_operand_offset - 2;
-        assert!(
-            jump <= u16::MAX as usize,
-            "jump offset exceeds u16 operand capacity"
-        );
-        let bytes = (jump as u16).to_le_bytes();
-        self.chunk.code[jump_operand_offset] = bytes[0];
-        self.chunk.code[jump_operand_offset + 1] = bytes[1];
+    fn emit_u8(&mut self, value: u8, span: Span) {
+        self.chunk.write_u8(value, span);
     }
 
-    fn emit_loop(&mut self, loop_start: usize) {
-        self.emit_op(OpCode::Loop);
-        let offset = self.chunk.code.len() - loop_start + 2;
-        assert!(
-            offset <= u16::MAX as usize,
-            "loop offset exceeds u16 operand capacity"
-        );
-        self.emit_u16(offset as u16);
+    fn emit_u16(&mut self, value: u16, span: Span) {
+        self.chunk.write_u16(value, span);
     }
 
-    fn begin_loop(&mut self, start: usize) {
-        self.loop_stack.push(LoopContext {
-            start,
-            break_jumps: Vec::new(),
-        });
+    fn emit_slot_op(&mut self, op: OpCode, slot: usize, span: Span) {
+        self.emit_op(op, span);
+        self.emit_u16(slot as u16, span);
     }
 
-    fn end_loop(&mut self) -> Option<Vec<usize>> {
-        self.loop_stack.pop().map(|ctx| ctx.break_jumps)
+    fn emit_named_op(&mut self, op: OpCode, name: &str, span: Span) -> Result<(), MuninnError> {
+        let index = self
+            .chunk
+            .add_constant(Constant::String(name.to_string()))
+            .map_err(|msg| MuninnError::new("compiler", msg, span))?;
+        self.emit_op(op, span);
+        self.emit_u16(index, span);
+        Ok(())
     }
 
-    fn current_loop_start(&self) -> Option<usize> {
-        self.loop_stack.last().map(|ctx| ctx.start)
+    fn emit_constant(&mut self, constant: Constant, span: Span) -> Result<(), MuninnError> {
+        let index = self
+            .chunk
+            .add_constant(constant)
+            .map_err(|msg| MuninnError::new("compiler", msg, span))?;
+        self.emit_op(OpCode::Constant, span);
+        self.emit_u16(index, span);
+        Ok(())
     }
 
-    fn emit_break_jump(&mut self) -> Option<usize> {
-        self.current_loop_start()?;
-        Some(self.emit_jump(OpCode::Jump))
+    fn emit_jump(&mut self, op: OpCode, span: Span) -> usize {
+        self.emit_op(op, span);
+        let patch_at = self.current_offset();
+        self.emit_u16(u16::MAX, span);
+        patch_at
     }
 
-    fn register_break_jump(&mut self, jump: usize) {
-        if let Some(ctx) = self.loop_stack.last_mut() {
-            ctx.break_jumps.push(jump);
+    fn patch_jump(&mut self, patch_at: usize, span: Span, errors: &mut Vec<MuninnError>) {
+        let jump = self.current_offset().saturating_sub(patch_at + 2);
+        if jump > u16::MAX as usize {
+            errors.push(MuninnError::new(
+                "compiler",
+                "jump offset overflow",
+                span,
+            ));
+            return;
         }
+        let bytes = (jump as u16).to_le_bytes();
+        self.chunk.code[patch_at] = bytes[0];
+        self.chunk.code[patch_at + 1] = bytes[1];
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use crate::compiler::compile_program;
-    use crate::desugar::desugar_program;
-    use crate::lexer::Lexer;
-    use crate::lower::lower_program;
-    use crate::parser::Parser;
-    use crate::typecheck::check_program;
-
-    #[test]
-    fn reuses_local_slots_across_sibling_scopes() {
-        let src = r#"
-fn f() -> Int {
-    { let a: Int = 1; a };
-    { let b: Int = 2; b };
-    3
-}
-
-let out: Int = f();
-"#;
-
-        let tokens = Lexer::new(src).lex().expect("tokens");
-        let mut parser = Parser::new(tokens);
-        let parsed = parser.parse_program().expect("program");
-        let desugared = desugar_program(parsed).expect("desugar");
-        let type_context = check_program(&desugared).expect("typecheck");
-        let lowered = lower_program(desugared, &type_context);
-        let module = compile_program(&lowered).expect("bytecode");
-
-        let function = module
-            .functions
-            .iter()
-            .find(|f| f.name == "f")
-            .expect("function f");
-        assert_eq!(function.local_count, 1);
+    fn emit_loop(&mut self, loop_start: usize, span: Span) {
+        self.emit_op(OpCode::Loop, span);
+        let jump = self.current_offset().saturating_sub(loop_start) + 2;
+        self.emit_u16(jump as u16, span);
     }
 }

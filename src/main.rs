@@ -1,50 +1,77 @@
 use std::{env, fs};
 
-use muninn::compile_and_run;
+use muninn::{analyze_document, compile_and_run};
 
 const DEMO_PROGRAM: &str = r#"
-fn checked_scale(scale: Float) -> Option[Float] {
-    if (scale == 0.0) { none } else { some(scale) }
+fn add(a: Int, b: Int) -> Int {
+    return a + b;
 }
 
-fn weighted_signal(raw: Float[3], weights: Float[3], norm: Float) -> Float[3] {
-    let normalized: Float[3] = raw / norm;
-    let weighted: Float[3] = normalized * weights;
-    0.95 * (weighted + 0.05)
+let mut total: Int = 0;
+while (total < 3) {
+    total = add(total, 1);
 }
 
-fn forward(raw: Float[3], weights: Float[3], bias: Float, norm: Float) -> Option[Float] {
-    let safe_norm: Float = checked_scale(norm)?;
-    let feats: Float[3] = weighted_signal(raw, weights, safe_norm);
-    let score: Float = feats[0] + feats[1] + feats[2] + bias;
-    some(unless (score > 0.0) { 0.0 } else { 1.0 })
-}
-
-let output = forward([210.0, 140.0, 70.0], [0.2, -0.5, 0.1], 0.3, 255.0);
-print("demo output = {output}");
+print("done");
+print(total);
 "#;
 
 fn main() {
-    let source = match env::args().nth(1) {
-        Some(path) => match fs::read_to_string(&path) {
-            Ok(contents) => contents,
-            Err(err) => {
-                eprintln!("failed to read '{path}': {err}");
-                std::process::exit(1);
-            }
-        },
-        None => DEMO_PROGRAM.to_string(),
+    let mut args = env::args().skip(1).collect::<Vec<_>>();
+    let (command, source) = match args.len() {
+        0 => ("run".to_string(), DEMO_PROGRAM.to_string()),
+        1 => {
+            let path = args.remove(0);
+            ("run".to_string(), read_source(&path))
+        }
+        _ => {
+            let command = args.remove(0);
+            let path = args.remove(0);
+            (command, read_source(&path))
+        }
     };
 
-    match compile_and_run(&source) {
-        Ok(value) => {
-            println!("=> {}", value);
+    match command.as_str() {
+        "run" => run_source(&source),
+        "check" => check_source(&source),
+        other => {
+            eprintln!("unknown command '{other}'. use 'run <file>' or 'check <file>'");
+            std::process::exit(1);
         }
+    }
+}
+
+fn read_source(path: &str) -> String {
+    match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) => {
+            eprintln!("failed to read '{path}': {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_source(source: &str) {
+    match compile_and_run(source) {
+        Ok(value) => println!("=> {}", value),
         Err(errors) => {
             for error in errors {
-                eprintln!("{}", error.render_with_source(&source));
+                eprintln!("{}", error.render_with_source(source));
             }
             std::process::exit(1);
         }
     }
+}
+
+fn check_source(source: &str) {
+    let analysis = analyze_document(source);
+    if analysis.diagnostics.is_empty() {
+        println!("ok");
+        return;
+    }
+
+    for error in analysis.diagnostics {
+        eprintln!("{}", error.render_with_source(source));
+    }
+    std::process::exit(1);
 }

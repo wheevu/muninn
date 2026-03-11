@@ -1,78 +1,37 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tower_lsp::lsp_types::{DocumentSymbol, Position, TextDocumentContentChangeEvent, Url};
-
-use crate::analysis::SymbolIndex;
+use muninn::frontend::FrontendAnalysis;
+use muninn::source::{compute_line_starts, utf16_position_to_offset};
+use tower_lsp::lsp_types::{TextDocumentContentChangeEvent, Url};
 
 #[derive(Debug)]
 pub struct DocumentState {
     pub version: i32,
     pub source: String,
-    pub symbols: Option<SymbolIndex>,
-    pub document_symbols: Vec<DocumentSymbol>,
-    pub line_offsets: Vec<usize>,
+    pub analysis: FrontendAnalysis,
+    pub line_starts: Vec<usize>,
 }
 
 impl DocumentState {
-    pub fn new(
-        version: i32,
-        source: String,
-        symbols: Option<SymbolIndex>,
-        document_symbols: Vec<DocumentSymbol>,
-    ) -> Self {
-        let line_offsets = compute_line_offsets(&source);
+    pub fn new(version: i32, source: String, analysis: FrontendAnalysis) -> Self {
+        let line_starts = compute_line_starts(&source);
         Self {
             version,
             source,
-            symbols,
-            document_symbols,
-            line_offsets,
+            analysis,
+            line_starts,
         }
     }
 
-    pub fn offset_at(&self, line_zero_based: u32, character_zero_based: u32) -> usize {
-        let line = line_zero_based as usize;
-        let character = character_zero_based as usize;
-        let line_start = self
-            .line_offsets
-            .get(line)
-            .copied()
-            .or_else(|| self.line_offsets.last().copied())
-            .unwrap_or(0);
-        line_start.saturating_add(character).min(self.source.len())
-    }
-
-    pub fn line_prefix_bounds(
-        &self,
-        line_zero_based: u32,
-        character_zero_based: u32,
-    ) -> (usize, usize) {
-        let line = line_zero_based as usize;
-        let start = self
-            .line_offsets
-            .get(line)
-            .copied()
-            .or_else(|| self.line_offsets.last().copied())
-            .unwrap_or(0);
-        let cursor = self.offset_at(line_zero_based, character_zero_based);
-        (start, cursor.min(self.source.len()))
+    pub fn offset_at(&self, line: u32, character: u32) -> Option<usize> {
+        utf16_position_to_offset(&self.source, &self.line_starts, line, character)
     }
 }
 
 #[derive(Default)]
 pub struct ServerState {
     pub docs: HashMap<Url, Arc<DocumentState>>,
-}
-
-pub fn compute_line_offsets(source: &str) -> Vec<usize> {
-    let mut offsets = vec![0usize];
-    for (index, ch) in source.char_indices() {
-        if ch == '\n' {
-            offsets.push(index + 1);
-        }
-    }
-    offsets
 }
 
 pub fn apply_content_changes(
@@ -90,28 +49,16 @@ pub fn apply_content_changes(
             continue;
         };
 
-        let offsets = compute_line_offsets(&text);
-        let start = position_to_offset(range.start, &offsets, text.len())?;
-        let end = position_to_offset(range.end, &offsets, text.len())?;
+        let line_starts = compute_line_starts(&text);
+        let start = utf16_position_to_offset(&text, &line_starts, range.start.line, range.start.character)?;
+        let end = utf16_position_to_offset(&text, &line_starts, range.end.line, range.end.character)?;
         if start > end || end > text.len() {
             return None;
         }
-
         text.replace_range(start..end, &change.text);
     }
 
     Some(text)
-}
-
-fn position_to_offset(
-    position: Position,
-    line_offsets: &[usize],
-    text_len: usize,
-) -> Option<usize> {
-    let line = position.line as usize;
-    let character = position.character as usize;
-    let start = *line_offsets.get(line)?;
-    Some((start + character).min(text_len))
 }
 
 #[cfg(test)]
@@ -121,37 +68,24 @@ mod tests {
     use super::apply_content_changes;
 
     #[test]
-    fn applies_incremental_insert() {
-        let original = "let x = 1;\nlet y = 2;\n";
+    fn applies_utf16_safe_incremental_insert() {
+        let original = "let bird = \"🐦\";\n";
         let changes = vec![TextDocumentContentChangeEvent {
             range: Some(Range {
                 start: Position {
-                    line: 1,
-                    character: 9,
+                    line: 0,
+                    character: 14,
                 },
                 end: Position {
-                    line: 1,
-                    character: 9,
+                    line: 0,
+                    character: 14,
                 },
             }),
             range_length: None,
-            text: " + 3".to_string(),
+            text: "!".to_string(),
         }];
 
         let updated = apply_content_changes(original, &changes).expect("updated");
-        assert_eq!(updated, "let x = 1;\nlet y = 2 + 3;\n");
-    }
-
-    #[test]
-    fn applies_full_replace() {
-        let original = "let x = 1;";
-        let changes = vec![TextDocumentContentChangeEvent {
-            range: None,
-            range_length: None,
-            text: "let x = 10;".to_string(),
-        }];
-
-        let updated = apply_content_changes(original, &changes).expect("updated");
-        assert_eq!(updated, "let x = 10;");
+        assert_eq!(updated, "let bird = \"🐦!\";\n");
     }
 }

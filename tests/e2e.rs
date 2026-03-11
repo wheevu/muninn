@@ -1,373 +1,89 @@
-use muninn::compile_and_run;
+use muninn::{analyze_document, compile_and_run};
 
 #[test]
-fn runs_locked_syntax_surface() {
+fn runs_small_typed_script() {
     let src = r#"
-fn scale(x: Float, factor: Float) -> Float {
-    x * factor
+fn add(a: Int, b: Int) -> Int {
+    return a + b;
 }
 
-let mut total: Float = 0.0;
-for i in 0..4 {
-    total = scale(total + 1.0, 1.25);
+let mut total: Int = 0;
+while (total < 3) {
+    total = add(total, 1);
 }
 
-let mut grid: Int[3, 3] = [0, 0, 0, 0, 0, 0, 0, 0, 0];
-grid[1, 2] = 9;
-
-let score: Float = total |> scale(1.0);
-let msg: String = "score={score}, cell={grid[1, 2]}";
-print(msg);
+total;
 "#;
 
-    assert!(compile_and_run(src).is_ok());
+    let value = compile_and_run(src).expect("value");
+    assert_eq!(value.to_string(), "3");
 }
 
 #[test]
-fn runs_class_constructor_and_method() {
+fn supports_string_concatenation() {
     let src = r#"
-class Counter {
-    let value: Int;
-
-    fn init(start: Int) {
-        self.value = start;
-    }
-
-    fn bump(delta: Int) -> Int {
-        self.value = self.value + delta;
-        self.value
-    }
-}
-
-let counter: Counter = Counter(2);
-let answer: Int = counter.bump(40);
-print("answer={answer}");
+let greeting: String = "Mun" + "inn";
+greeting;
 "#;
 
-    assert!(compile_and_run(src).is_ok());
+    let value = compile_and_run(src).expect("value");
+    assert_eq!(value.to_string(), "Muninn");
 }
 
 #[test]
 fn rejects_type_mismatch() {
     let src = r#"
+let x: Int = true;
+"#;
+
+    let analysis = analyze_document(src);
+    assert!(!analysis.diagnostics.is_empty());
+    assert!(analysis.diagnostics[0].message.contains("expected initializer of type Int"));
+}
+
+#[test]
+fn rejects_assignment_to_immutable_binding() {
+    let src = r#"
 let x: Int = 1;
-let y: String = x;
+x = 2;
 "#;
 
-    assert!(compile_and_run(src).is_err());
+    let analysis = analyze_document(src);
+    assert!(analysis
+        .diagnostics
+        .iter()
+        .any(|error| error.message.contains("not mutable")));
 }
 
 #[test]
-fn runs_vectorized_array_ops_and_scalar_promotion() {
+fn rejects_missing_non_void_return_paths() {
     let src = r#"
-let a: Float[3] = [1.0, 2.0, 3.0];
-let b: Float[3] = [0.5, 1.0, 1.5];
-let c: Float[3] = a + b;
-let d: Float[3] = c * 2.0;
-let e: Float[3] = 0.5 * d;
-print("vec={e[0]}, {e[1]}, {e[2]}");
-"#;
-
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn enforces_strict_scalar_promotion() {
-    let src = r#"
-let a: Float[3] = [10.0, 20.0, 30.0];
-let b: Float[3] = a / 255;
-"#;
-
-    assert!(compile_and_run(src).is_err());
-}
-
-#[test]
-fn propagates_none_with_try_operator() {
-    let src = r#"
-fn checked(v: Float) -> Option[Float] {
-    if (v > 0.0) { some(v) } else { none }
-}
-
-fn probe(v: Float) -> Option[Float] {
-    let x: Float = checked(v)?;
-    some(unwrap(none))
-}
-
-let out: Option[Float] = probe(-1.0);
-print("out={out}");
-"#;
-
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn rejects_intrinsic_shadowing() {
-    let src = r#"
-let none: Int = 1;
-"#;
-
-    assert!(compile_and_run(src).is_err());
-}
-
-#[test]
-fn supports_string_relational_comparisons() {
-    let src = r#"
-if ("alpha" < "beta") { 1 } else { unwrap(none) };
-if ("beta" > "alpha") { 1 } else { unwrap(none) };
-"#;
-
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn supports_ml_array_builtins() {
-    let src = r#"
-let a: Float[3] = [1.0, 2.0, 3.0];
-let b: Float[3] = ones(3);
-let c: Float[3] = a + b;
-let d: Float = sum(c);
-let e: Float = dot(c, [2.0, 2.0, 2.0]);
-let n: Int = len(c);
-print("d={d}, e={e}, n={n}");
-"#;
-
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn supports_grid_property_indexing() {
-    let src = r#"
-class GridHolder {
-    let grid: Int[2, 2];
-
-    fn init() {
-        self.grid = [0, 0, 0, 0];
-    }
-
-    fn poke() {
-        self.grid[1, 1] = 7;
-        print(self.grid[1, 1]);
+fn maybe(flag: Bool) -> Int {
+    if (flag) {
+        return 1;
     }
 }
 
-let holder: GridHolder = GridHolder();
-holder.poke();
+let x: Int = maybe(false);
+x + 1;
 "#;
 
-    assert!(compile_and_run(src).is_ok());
+    let analysis = analyze_document(src);
+    assert!(analysis
+        .diagnostics
+        .iter()
+        .any(|error| error.message.contains("may fall through without returning Int")));
 }
 
 #[test]
-fn infers_local_binding_types() {
+fn reports_runtime_builtin_assert_errors_with_spans() {
     let src = r#"
-let x = 2;
-let y = x + 3;
-let z: Int = y;
-print("z={z}");
+assert(false);
+1;
 "#;
 
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn infers_constructor_type_for_local_binding() {
-    let src = r#"
-class Counter {
-    let value: Int;
-
-    fn init(start: Int) {
-        self.value = start;
-    }
-
-    fn bump(delta: Int) -> Int {
-        self.value = self.value + delta;
-        self.value
-    }
-}
-
-let counter = Counter(1);
-let out: Int = counter.bump(2);
-print("out={out}");
-"#;
-
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn supports_grid_property_indexing_with_inferred_instance_type() {
-    let src = r#"
-class GridHolder {
-    let grid: Int[2, 2];
-
-    fn init() {
-        self.grid = [0, 0, 0, 0];
-    }
-}
-
-let holder = GridHolder();
-holder.grid[1, 0] = 5;
-print(holder.grid[1, 0]);
-"#;
-
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn len_accepts_strings() {
-    let src = r#"
-let n: Int = len("muninn");
-print(n);
-"#;
-
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn handles_deep_recursion_without_host_stack_overflow() {
-    let src = r#"
-fn down(n: Int) -> Int {
-    if (n == 0) { 0 } else { down(n - 1) }
-}
-
-let out: Int = down(5000);
-print(out);
-"#;
-
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn supports_nested_grid_property_indexing() {
-    let src = r#"
-class GridHolder {
-    let grid: Int[2, 2];
-
-    fn init() {
-        self.grid = [0, 0, 0, 0];
-    }
-}
-
-class Wrapper {
-    let holder: GridHolder;
-
-    fn init() {
-        self.holder = GridHolder();
-    }
-}
-
-let wrapper = Wrapper();
-wrapper.holder.grid[1, 1] = 9;
-print(wrapper.holder.grid[1, 1]);
-"#;
-
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn supports_short_circuit_logic() {
-    let src = r#"
-let a: Bool = false && (1 / 0 == 0);
-let b: Bool = true || (1 / 0 == 0);
-if (a == false && b == true) { 1 } else { unwrap(none) };
-"#;
-
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn supports_break_and_continue() {
-    let src = r#"
-let mut i: Int = 0;
-let mut total: Int = 0;
-while (i < 10) {
-    i = i + 1;
-    if (i < 3) {
-        continue;
-    }
-    total = total + i;
-    if (i == 5) {
-        break;
-    }
-}
-print(total);
-"#;
-
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn supports_if_statement_without_else() {
-    let src = r#"
-let mut x: Int = 0;
-if (x == 0) {
-    x = 7;
-}
-print(x);
-"#;
-
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn supports_enum_match_and_inferred_return_types() {
-    let src = r#"
-enum Mode { Fast, Slow }
-
-fn choose(flag: Bool) {
-    if (flag) { Mode.Fast } else { Mode.Slow }
-}
-
-let mode = choose(true);
-let score: Int = match (mode) {
-    Mode.Fast => 10,
-    Slow => 5,
-    _ => 0,
-};
-print(score);
-"#;
-
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn supports_generic_function_syntax() {
-    let src = r#"
-fn id<T>(x: T) -> T {
-    x
-}
-
-let out: Int = id(7);
-print(out);
-"#;
-
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn supports_runtime_math_and_raw_output_builtins() {
-    let src = r#"
-let x: Float = sin(0.5) + cos(0.5);
-let y: Int = floor(12.9);
-let z: Int = round(2.6);
-let w: Int = clamp(14, 0, 12);
-print_raw("x={x}, y={y}, z={z}, w={w}\n");
-sleep_ms(0);
-"#;
-
-    assert!(compile_and_run(src).is_ok());
-}
-
-#[test]
-fn supports_string_buffer_join_builtins() {
-    let src = r#"
-let mut buf: String[5] = make_string_buf(5);
-buf[0] = "M";
-buf[1] = "u";
-buf[2] = "n";
-buf[3] = "i";
-buf[4] = "n";
-print_raw(join_chars(buf) + "\n");
-"#;
-
-    assert!(compile_and_run(src).is_ok());
+    let errors = compile_and_run(src).expect_err("runtime error");
+    assert_eq!(errors[0].phase, "vm");
+    assert!(errors[0].message.contains("assertion failed"));
+    assert!(errors[0].span.line > 0);
 }
