@@ -1,3 +1,5 @@
+
+
 fn checked_scale(scale: Float) -> Option[Float] {
     if (scale == 0.0) { none } else { some(scale) }
 }

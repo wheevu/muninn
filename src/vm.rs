@@ -185,12 +185,15 @@ impl Vm {
                     .ok_or_else(|| format!("invalid function id {}", frame.function_id))?
                     .clone()
             };
+            let function_id = self.frames[frame_idx].function_id;
             let ip = self.frames[frame_idx].ip;
-            let function_name = function.name.clone();
             let chunk = &function.chunk;
 
             let op = OpCode::from_byte(*chunk.code.get(ip).ok_or_else(|| {
-                format!("instruction pointer out of range in '{}'", function_name)
+                format!(
+                    "instruction pointer out of range in function #{}",
+                    function_id
+                )
             })?)
             .ok_or_else(|| format!("invalid opcode at {}", ip))?;
             self.frames[frame_idx].ip += 1;
@@ -201,8 +204,7 @@ impl Vm {
                     let constant = chunk
                         .constants
                         .get(idx)
-                        .ok_or_else(|| format!("invalid constant index {}", idx))?
-                        .clone();
+                        .ok_or_else(|| format!("invalid constant index {}", idx))?;
                     self.stack.push(self.constant_to_value(constant));
                 }
                 OpCode::Nil => self.stack.push(Value::Nil),
@@ -400,14 +402,14 @@ impl Vm {
         }
     }
 
-    fn constant_to_value(&self, constant: Constant) -> Value {
+    fn constant_to_value(&self, constant: &Constant) -> Value {
         match constant {
-            Constant::Int(v) => Value::Int(v),
-            Constant::Float(v) => Value::Float(v),
-            Constant::Bool(v) => Value::Bool(v),
-            Constant::String(v) => Value::String(Rc::new(v)),
-            Constant::Function(id) => Value::Function(id),
-            Constant::Class(id) => Value::Class(id),
+            Constant::Int(v) => Value::Int(*v),
+            Constant::Float(v) => Value::Float(*v),
+            Constant::Bool(v) => Value::Bool(*v),
+            Constant::String(v) => Value::String(Rc::new(v.clone())),
+            Constant::Function(id) => Value::Function(*id),
+            Constant::Class(id) => Value::Class(*id),
             Constant::Nil => Value::Nil,
         }
     }

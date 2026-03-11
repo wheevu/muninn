@@ -3,6 +3,7 @@ pub mod bytecode;
 pub mod compiler;
 pub mod desugar;
 pub mod error;
+pub mod frontend;
 pub mod lexer;
 pub mod lower;
 pub mod parser;
@@ -15,6 +16,9 @@ use ast::Program;
 use compiler::compile_program;
 use desugar::desugar_program;
 use error::MuninnError;
+pub use frontend::{
+    FrontendAnalysis, analyze_document, check_document, lex_document, parse_document,
+};
 use lexer::Lexer;
 use lower::lower_program;
 use parser::Parser;

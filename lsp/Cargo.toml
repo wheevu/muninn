@@ -1,0 +1,13 @@
+[package]
+name = "muninn-lsp"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "muninn-lsp"
+path = "src/main.rs"
+
+[dependencies]
+muninn = { path = ".." }
+tokio = { version = "1", features = ["io-std", "macros", "rt-multi-thread", "sync"] }
+tower-lsp = "0.20"

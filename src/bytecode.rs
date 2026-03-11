@@ -38,6 +38,7 @@ pub struct ClassBytecode {
 pub struct Chunk {
     pub code: Vec<u8>,
     pub constants: Vec<Constant>,
+    constant_index: HashMap<ConstantKey, u16>,
 }
 
 impl Chunk {
@@ -45,6 +46,7 @@ impl Chunk {
         Self {
             code: Vec::new(),
             constants: Vec::new(),
+            constant_index: HashMap::new(),
         }
     }
 
@@ -61,13 +63,9 @@ impl Chunk {
     }
 
     pub fn add_constant(&mut self, constant: Constant) -> Result<u16, String> {
-        if let Some((index, _)) = self
-            .constants
-            .iter()
-            .enumerate()
-            .find(|(_, existing)| constants_equal(existing, &constant))
-        {
-            return Ok(index as u16);
+        let key = ConstantKey::from_constant(&constant);
+        if let Some(index) = self.constant_index.get(&key) {
+            return Ok(*index);
         }
 
         if self.constants.len() >= u16::MAX as usize {
@@ -76,8 +74,10 @@ impl Chunk {
                 u16::MAX
             ));
         }
+        let index = self.constants.len() as u16;
         self.constants.push(constant);
-        Ok((self.constants.len() - 1) as u16)
+        self.constant_index.insert(key, index);
+        Ok(index)
     }
 }
 
@@ -167,16 +167,28 @@ impl OpCode {
     }
 }
 
-fn constants_equal(left: &Constant, right: &Constant) -> bool {
-    match (left, right) {
-        (Constant::Int(a), Constant::Int(b)) => a == b,
-        (Constant::Float(a), Constant::Float(b)) => a.to_bits() == b.to_bits(),
-        (Constant::Bool(a), Constant::Bool(b)) => a == b,
-        (Constant::String(a), Constant::String(b)) => a == b,
-        (Constant::Function(a), Constant::Function(b)) => a == b,
-        (Constant::Class(a), Constant::Class(b)) => a == b,
-        (Constant::Nil, Constant::Nil) => true,
-        _ => false,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ConstantKey {
+    Int(i64),
+    Float(u64),
+    Bool(bool),
+    String(String),
+    Function(usize),
+    Class(usize),
+    Nil,
+}
+
+impl ConstantKey {
+    fn from_constant(constant: &Constant) -> Self {
+        match constant {
+            Constant::Int(value) => Self::Int(*value),
+            Constant::Float(value) => Self::Float(value.to_bits()),
+            Constant::Bool(value) => Self::Bool(*value),
+            Constant::String(value) => Self::String(value.clone()),
+            Constant::Function(value) => Self::Function(*value),
+            Constant::Class(value) => Self::Class(*value),
+            Constant::Nil => Self::Nil,
+        }
     }
 }
 

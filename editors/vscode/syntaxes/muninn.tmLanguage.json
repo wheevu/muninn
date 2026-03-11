@@ -1,0 +1,276 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Muninn",
+  "scopeName": "source.muninn",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#class-declaration" },
+    { "include": "#function-declaration" },
+    { "include": "#let-declaration" },
+    { "include": "#control-keywords" },
+    { "include": "#declaration-keywords" },
+    { "include": "#self" },
+    { "include": "#builtin-types" },
+    { "include": "#builtins" },
+    { "include": "#booleans" },
+    { "include": "#numbers" },
+    { "include": "#operators" },
+    { "include": "#type-annotations" },
+    { "include": "#member-access" },
+    { "include": "#punctuation" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.muninn",
+          "begin": "//",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.comment.muninn" }
+          },
+          "end": "$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.muninn",
+          "begin": "\"",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.muninn" }
+          },
+          "end": "\"",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.muninn" }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.muninn",
+              "match": "\\\\(?:[nrt\"\\\\{}])"
+            },
+            {
+              "name": "meta.interpolation.muninn",
+              "begin": "(?<!\\{)\\{",
+              "beginCaptures": {
+                "0": { "name": "punctuation.section.interpolation.begin.muninn" }
+              },
+              "end": "\\}",
+              "endCaptures": {
+                "0": { "name": "punctuation.section.interpolation.end.muninn" }
+              },
+              "patterns": [
+                { "include": "#control-keywords" },
+                { "include": "#declaration-keywords" },
+                { "include": "#self" },
+                { "include": "#builtin-types" },
+                { "include": "#builtins" },
+                { "include": "#booleans" },
+                { "include": "#numbers" },
+                { "include": "#operators" },
+                { "include": "#member-access" },
+                { "include": "#punctuation" },
+                { "include": "#identifiers" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "class-declaration": {
+      "patterns": [
+        {
+          "name": "meta.class.declaration.muninn",
+          "match": "\\b(class)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.declaration.class.muninn" },
+            "2": { "name": "entity.name.type.class.muninn" }
+          }
+        }
+      ]
+    },
+    "function-declaration": {
+      "patterns": [
+        {
+          "name": "meta.function.declaration.muninn",
+          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.declaration.function.muninn" },
+            "2": { "name": "entity.name.function.muninn" }
+          }
+        },
+        {
+          "name": "meta.method.init.declaration.muninn",
+          "match": "\\b(fn)\\s+(init)\\b",
+          "captures": {
+            "1": { "name": "storage.type.declaration.function.muninn" },
+            "2": { "name": "entity.name.function.constructor.muninn" }
+          }
+        }
+      ]
+    },
+    "let-declaration": {
+      "patterns": [
+        {
+          "name": "meta.variable.declaration.muninn",
+          "match": "\\b(let)\\s+(mut\\s+)?([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.declaration.variable.muninn" },
+            "2": { "name": "storage.modifier.mutable.muninn" },
+            "3": { "name": "variable.other.definition.muninn" }
+          }
+        }
+      ]
+    },
+    "control-keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.muninn",
+          "match": "\\b(if|else|unless|return|while|for|in)\\b"
+        }
+      ]
+    },
+    "declaration-keywords": {
+      "patterns": [
+        {
+          "name": "storage.type.declaration.muninn",
+          "match": "\\b(class|fn|let|mut|init)\\b"
+        }
+      ]
+    },
+    "self": {
+      "patterns": [
+        {
+          "name": "variable.language.self.muninn",
+          "match": "\\bself\\b"
+        }
+      ]
+    },
+    "builtin-types": {
+      "patterns": [
+        {
+          "name": "storage.type.primitive.muninn",
+          "match": "\\b(Int|Float|String|Bool|Void|Option)\\b"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.muninn",
+          "match": "\\b(print|len|sum|dot|zeros|ones|to_string|some|none|is_none|unwrap|__some|__none|__is_none|__unwrap)\\b"
+        }
+      ]
+    },
+    "booleans": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.muninn",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.muninn",
+          "match": "\\b\\d+\\.\\d+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.muninn",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.pipeline.muninn",
+          "match": "\\|>"
+        },
+        {
+          "name": "keyword.operator.range.muninn",
+          "match": "\\.\\."
+        },
+        {
+          "name": "keyword.operator.arrow.muninn",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.try.muninn",
+          "match": "\\?"
+        },
+        {
+          "name": "keyword.operator.comparison.muninn",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.assignment.muninn",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.arithmetic.muninn",
+          "match": "[+\\-*/]"
+        },
+        {
+          "name": "keyword.operator.logical.muninn",
+          "match": "!"
+        }
+      ]
+    },
+    "type-annotations": {
+      "patterns": [
+        {
+          "name": "meta.type.annotation.muninn",
+          "match": "(:|->)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "punctuation.separator.type.muninn" },
+            "2": { "name": "entity.name.type.muninn" }
+          }
+        }
+      ]
+    },
+    "member-access": {
+      "patterns": [
+        {
+          "name": "meta.member.access.muninn",
+          "match": "\\.\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "0": { "name": "meta.member.access.muninn" },
+            "1": { "name": "variable.other.property.muninn" }
+          }
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.comma.muninn",
+          "match": ","
+        },
+        {
+          "name": "punctuation.terminator.statement.muninn",
+          "match": ";"
+        },
+        {
+          "name": "punctuation.section.group.begin.muninn",
+          "match": "[({\\[]"
+        },
+        {
+          "name": "punctuation.section.group.end.muninn",
+          "match": "[)}\\]]"
+        }
+      ]
+    },
+    "identifiers": {
+      "patterns": [
+        {
+          "name": "variable.other.muninn",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+        }
+      ]
+    }
+  }
+}

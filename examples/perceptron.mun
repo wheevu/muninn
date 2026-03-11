@@ -1,3 +1,5 @@
+
+
 fn checked_scale(scale: Float) -> Option[Float] {
     if (scale == 0.0) { __none } else { __some(scale) }
 }
@@ -29,3 +31,5 @@ class Perceptron {
 let p: Perceptron = Perceptron([0.2, -0.5, 0.1], 0.3);
 let output: Option[Float] = p.forward([200.0, 110.0, 50.0], 255.0);
 print("perceptron output = {output}");
+
+

@@ -863,10 +863,12 @@ mod tests {
             panic!("for loop should lower into block expression")
         };
 
-        assert!(block
-            .statements
-            .iter()
-            .any(|stmt| matches!(stmt, Stmt::While { .. })));
+        assert!(
+            block
+                .statements
+                .iter()
+                .any(|stmt| matches!(stmt, Stmt::While { .. }))
+        );
     }
 
     #[test]
