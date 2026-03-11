@@ -207,6 +207,19 @@ impl Desugarer {
                 body: self.desugar_block(body)?,
                 span,
             }),
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+                span,
+            } => Ok(Stmt::If {
+                condition: self.desugar_expr(condition)?,
+                then_branch: self.desugar_block(then_branch)?,
+                else_branch: else_branch
+                    .map(|branch| self.desugar_block(branch))
+                    .transpose()?,
+                span,
+            }),
             Stmt::ForRange {
                 var_name,
                 start,

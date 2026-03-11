@@ -281,11 +281,28 @@ let mut i: Int = 0;
 let mut total: Int = 0;
 while (i < 10) {
     i = i + 1;
-    if (i < 3) { continue; } else { };
+    if (i < 3) {
+        continue;
+    }
     total = total + i;
-    if (i == 5) { break; } else { };
+    if (i == 5) {
+        break;
+    }
 }
 print(total);
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}
+
+#[test]
+fn supports_if_statement_without_else() {
+    let src = r#"
+let mut x: Int = 0;
+if (x == 0) {
+    x = 7;
+}
+print(x);
 "#;
 
     assert!(compile_and_run(src).is_ok());
@@ -321,6 +338,35 @@ fn id<T>(x: T) -> T {
 
 let out: Int = id(7);
 print(out);
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}
+
+#[test]
+fn supports_runtime_math_and_raw_output_builtins() {
+    let src = r#"
+let x: Float = sin(0.5) + cos(0.5);
+let y: Int = floor(12.9);
+let z: Int = round(2.6);
+let w: Int = clamp(14, 0, 12);
+print_raw("x={x}, y={y}, z={z}, w={w}\n");
+sleep_ms(0);
+"#;
+
+    assert!(compile_and_run(src).is_ok());
+}
+
+#[test]
+fn supports_string_buffer_join_builtins() {
+    let src = r#"
+let mut buf: String[5] = make_string_buf(5);
+buf[0] = "M";
+buf[1] = "u";
+buf[2] = "n";
+buf[3] = "i";
+buf[4] = "n";
+print_raw(join_chars(buf) + "\n");
 "#;
 
     assert!(compile_and_run(src).is_ok());

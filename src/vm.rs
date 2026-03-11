@@ -2,7 +2,10 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
+use std::io::Write;
 use std::rc::Rc;
+use std::thread;
+use std::time::Duration;
 
 use crate::bytecode::{BytecodeModule, Chunk, Constant, OpCode};
 
@@ -145,6 +148,8 @@ impl Vm {
         self.globals
             .insert("print".to_string(), Value::Native(native_print));
         self.globals
+            .insert("print_raw".to_string(), Value::Native(native_print_raw));
+        self.globals
             .insert("len".to_string(), Value::Native(native_len));
         self.globals
             .insert("sum".to_string(), Value::Native(native_sum));
@@ -154,6 +159,24 @@ impl Vm {
             .insert("zeros".to_string(), Value::Native(native_zeros));
         self.globals
             .insert("ones".to_string(), Value::Native(native_ones));
+        self.globals
+            .insert("sin".to_string(), Value::Native(native_sin));
+        self.globals
+            .insert("cos".to_string(), Value::Native(native_cos));
+        self.globals
+            .insert("floor".to_string(), Value::Native(native_floor));
+        self.globals
+            .insert("round".to_string(), Value::Native(native_round));
+        self.globals
+            .insert("clamp".to_string(), Value::Native(native_clamp));
+        self.globals
+            .insert("sleep_ms".to_string(), Value::Native(native_sleep_ms));
+        self.globals.insert(
+            "make_string_buf".to_string(),
+            Value::Native(native_make_string_buf),
+        );
+        self.globals
+            .insert("join_chars".to_string(), Value::Native(native_join_chars));
         self.globals
             .insert("some".to_string(), Value::Native(native_some));
         self.globals
@@ -692,6 +715,17 @@ fn native_print(args: &[Value]) -> VmResult<Value> {
     Ok(Value::Nil)
 }
 
+fn native_print_raw(args: &[Value]) -> VmResult<Value> {
+    if args.len() != 1 {
+        return Err("print_raw expects 1 argument".to_string());
+    }
+    print!("{}", args[0]);
+    std::io::stdout()
+        .flush()
+        .map_err(|err| format!("print_raw flush failed: {}", err))?;
+    Ok(Value::Nil)
+}
+
 fn native_some(args: &[Value]) -> VmResult<Value> {
     if args.len() != 1 {
         return Err("some expects 1 argument".to_string());
@@ -803,6 +837,125 @@ fn native_zeros(args: &[Value]) -> VmResult<Value> {
 
 fn native_ones(args: &[Value]) -> VmResult<Value> {
     make_filled_float_array(args, 1.0, "ones")
+}
+
+fn native_sin(args: &[Value]) -> VmResult<Value> {
+    if args.len() != 1 {
+        return Err("sin expects 1 argument".to_string());
+    }
+
+    let Value::Float(value) = args[0] else {
+        return Err("sin expects a Float argument".to_string());
+    };
+    Ok(Value::Float(value.sin()))
+}
+
+fn native_cos(args: &[Value]) -> VmResult<Value> {
+    if args.len() != 1 {
+        return Err("cos expects 1 argument".to_string());
+    }
+
+    let Value::Float(value) = args[0] else {
+        return Err("cos expects a Float argument".to_string());
+    };
+    Ok(Value::Float(value.cos()))
+}
+
+fn native_floor(args: &[Value]) -> VmResult<Value> {
+    if args.len() != 1 {
+        return Err("floor expects 1 argument".to_string());
+    }
+
+    let Value::Float(value) = args[0] else {
+        return Err("floor expects a Float argument".to_string());
+    };
+    Ok(Value::Int(value.floor() as i64))
+}
+
+fn native_round(args: &[Value]) -> VmResult<Value> {
+    if args.len() != 1 {
+        return Err("round expects 1 argument".to_string());
+    }
+
+    let Value::Float(value) = args[0] else {
+        return Err("round expects a Float argument".to_string());
+    };
+    Ok(Value::Int(value.round() as i64))
+}
+
+fn native_clamp(args: &[Value]) -> VmResult<Value> {
+    if args.len() != 3 {
+        return Err("clamp expects 3 arguments".to_string());
+    }
+
+    let Value::Int(value) = args[0] else {
+        return Err("clamp expects Int arguments".to_string());
+    };
+    let Value::Int(min_value) = args[1] else {
+        return Err("clamp expects Int arguments".to_string());
+    };
+    let Value::Int(max_value) = args[2] else {
+        return Err("clamp expects Int arguments".to_string());
+    };
+
+    if min_value > max_value {
+        return Err("clamp expects min <= max".to_string());
+    }
+
+    Ok(Value::Int(value.clamp(min_value, max_value)))
+}
+
+fn native_sleep_ms(args: &[Value]) -> VmResult<Value> {
+    if args.len() != 1 {
+        return Err("sleep_ms expects 1 argument".to_string());
+    }
+
+    let Value::Int(ms) = args[0] else {
+        return Err("sleep_ms expects an Int argument".to_string());
+    };
+    if ms < 0 {
+        return Err("sleep_ms expects a non-negative Int argument".to_string());
+    }
+
+    thread::sleep(Duration::from_millis(ms as u64));
+    Ok(Value::Nil)
+}
+
+fn native_make_string_buf(args: &[Value]) -> VmResult<Value> {
+    if args.len() != 1 {
+        return Err("make_string_buf expects 1 argument".to_string());
+    }
+
+    let Value::Int(len) = args[0] else {
+        return Err("make_string_buf expects an Int length".to_string());
+    };
+    if len < 0 {
+        return Err("make_string_buf length must be non-negative".to_string());
+    }
+
+    let items = vec![Value::String(Rc::new(String::new())); len as usize];
+    Ok(Value::Array(Rc::new(RefCell::new(items))))
+}
+
+fn native_join_chars(args: &[Value]) -> VmResult<Value> {
+    if args.len() != 1 {
+        return Err("join_chars expects 1 argument".to_string());
+    }
+
+    let Value::Array(items) = &args[0] else {
+        return Err("join_chars expects an array".to_string());
+    };
+
+    let values = items.borrow();
+    let mut out = String::with_capacity(values.len());
+    for value in values.iter() {
+        let Value::String(text) = value else {
+            return Err("join_chars expects String[]".to_string());
+        };
+        out.push_str(text.as_str());
+    }
+
+    Ok(Value::String(Rc::new(out)))
 }
 
 fn make_filled_float_array(args: &[Value], fill: f64, name: &str) -> VmResult<Value> {

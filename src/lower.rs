@@ -67,6 +67,17 @@ impl<'a> Lowerer<'a> {
                 body: self.lower_block(body),
                 span,
             },
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+                span,
+            } => Stmt::If {
+                condition: self.lower_expr(condition),
+                then_branch: self.lower_block(then_branch),
+                else_branch: else_branch.map(|branch| self.lower_block(branch)),
+                span,
+            },
             Stmt::ForRange {
                 var_name,
                 start,

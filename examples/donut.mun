@@ -1,0 +1,113 @@
+let shade_ramp: String[13] = [" ", ".", ",", "-", "~", ":", ";", "=", "!", "*", "#", "$", "@"];
+
+fn shade_index(luminance: Float) -> Int {
+    clamp(round(luminance * 8.0), 0, 12)
+}
+
+fn render_frame(a: Float, b: Float, frame_buf: String[1781]) -> String {
+    let r1: Float = 1.0;
+    let r2: Float = 2.0;
+    let k1: Float = 18.0;
+    let k2: Float = 5.0;
+    let tau: Float = 6.283185307179586;
+    let theta_step: Float = 0.22;
+    let phi_step: Float = 0.07;
+
+    let sin_a: Float = sin(a);
+    let cos_a: Float = cos(a);
+    let sin_b: Float = sin(b);
+    let cos_b: Float = cos(b);
+
+    let mut zbuf: Float[80, 22] = zeros(1760);
+    let mut screen: Float[80, 22] = zeros(1760);
+
+    let mut theta: Float = 0.0;
+    while (theta < tau) {
+        let sin_theta: Float = sin(theta);
+        let cos_theta: Float = cos(theta);
+
+        let circle_x: Float = r2 + r1 * cos_theta;
+        let circle_y: Float = r1 * sin_theta;
+
+        let mut phi: Float = 0.0;
+        while (phi < tau) {
+            let sin_phi: Float = sin(phi);
+            let cos_phi: Float = cos(phi);
+
+            let x: Float =
+                circle_x * (cos_b * cos_phi + sin_a * sin_b * sin_phi)
+                - circle_y * cos_a * sin_b;
+
+            let y: Float =
+                circle_x * (sin_b * cos_phi - sin_a * cos_b * sin_phi)
+                + circle_y * cos_a * cos_b;
+
+            let z: Float =
+                k2 + cos_a * circle_x * sin_phi + circle_y * sin_a;
+
+            let ooz: Float = 1.0 / z;
+
+            let xp: Int = round(40.0 + k1 * ooz * x);
+            let yp: Int = round(11.0 - k1 * ooz * y);
+
+            let luminance: Float =
+                cos_phi * cos_theta * sin_b
+                - cos_a * cos_theta * sin_phi
+                - sin_a * sin_theta
+                + cos_b * (cos_a * sin_theta - cos_theta * sin_a * sin_phi);
+
+            if (
+                xp >= 0
+                && xp < 80
+                && yp >= 0
+                && yp < 22
+                && luminance > 0.0
+                && ooz > zbuf[xp, yp]
+            ) {
+                zbuf[xp, yp] = ooz;
+                screen[xp, yp] = luminance;
+            }
+
+            phi = phi + phi_step;
+        }
+
+        theta = theta + theta_step;
+    }
+
+    for row_index in 0..22 {
+        let row_base: Int = row_index * 81;
+        for col_index in 0..80 {
+            let idx: Int = shade_index(screen[col_index, row_index]);
+            frame_buf[row_base + col_index] = shade_ramp[idx];
+        }
+        if (row_index < 21) {
+            frame_buf[row_base + 80] = "\n";
+        }
+    }
+    join_chars(frame_buf)
+}
+
+let esc: String = "";
+let clear_once: String = esc + "[2J" + esc + "[H";
+let cursor_home: String = esc + "[H";
+let cursor_hide: String = esc + "[?25l";
+let cursor_show: String = esc + "[?25h";
+
+print_raw(clear_once + cursor_hide);
+
+let mut a: Float = 0.0;
+let mut b: Float = 0.0;
+let frame_count: Int = 10000;
+let mut frame: Int = 0;
+let mut frame_buf: String[1781] = make_string_buf(1781);
+
+while (frame < frame_count) {
+    let frame_text: String = render_frame(a, b, frame_buf);
+    print_raw(cursor_home + frame_text);
+    a = a + 0.07;
+    b = b + 0.03;
+    frame = frame + 1;
+    sleep_ms(16);
+}
+
+print_raw(cursor_show);

@@ -16,6 +16,7 @@ Pipeline:
   - `fn id<T>(x: T) -> T { x }`
   - `let xs: Option<Int> = some(1)`
 - Expression-based `if`/blocks and `unless`
+- Statement `if` with optional `else` (no trailing expression required)
 - `match` expressions and enums (unit variants):
   - `enum Mode { Fast, Slow }`
   - `match (mode) { Mode.Fast => 1, Slow => 0, _ => -1 }`
@@ -26,13 +27,24 @@ Pipeline:
 - Loop control statements: `break`, `continue`
 - String interpolation: `"value={x}"`
 - Option propagation: `Option[T]`, `expr?`, `some(value)`, `none`
+- Runtime helpers for math/terminal rendering:
+  - math: `sin`, `cos`, `floor`, `round`, `clamp`
+  - terminal/output: `print_raw`, `sleep_ms`
+  - string buffering: `make_string_buf`, `join_chars`
 - Vectorized math for arrays:
   - same-shape array ops (`+`, `-`, `*`, `/`)
   - strict scalar promotion (`array * 2.0`, `2.0 * array`)
 
-## Example
+## Examples
 
-Example file: `examples/feature_tour.mun`
+`donut.mun`
+
+<p align = 'center'>
+<img src=assets/donut.gif width=80%>
+</p>
+
+
+`feature_tour.mun`
 
 ```muninn
 fn checked_scale(scale: Float) -> Option[Float] {
@@ -85,10 +97,10 @@ print("output={output}, grid00={grid[0, 0]}");
 cargo run
 ```
 
-Run the ML demo:
+Run the demos:
 
 ```bash
-cargo run -- examples/perceptron.mun
+cargo run -- examples/donut.mun
 ```
 
 Run tests:

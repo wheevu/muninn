@@ -32,6 +32,12 @@ pub enum Stmt {
         body: BlockExpr,
         span: Span,
     },
+    If {
+        condition: Expr,
+        then_branch: BlockExpr,
+        else_branch: Option<BlockExpr>,
+        span: Span,
+    },
     ForRange {
         var_name: String,
         start: Expr,

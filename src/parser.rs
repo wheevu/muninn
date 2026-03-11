@@ -292,6 +292,11 @@ impl Parser {
             });
         }
 
+        if self.match_where(|k| matches!(k, TokenKind::If)) {
+            let span = self.previous().span;
+            return self.parse_if_stmt(span);
+        }
+
         if self.match_where(|k| matches!(k, TokenKind::For)) {
             return self.parse_for_range_stmt();
         }
@@ -324,6 +329,31 @@ impl Parser {
             start,
             end,
             body,
+            span,
+        })
+    }
+
+    fn parse_if_stmt(&mut self, span: Span) -> Result<Stmt, MuninnError> {
+        self.consume_where(
+            |k| matches!(k, TokenKind::LeftParen),
+            "expected '(' after if",
+        )?;
+        let condition = self.parse_expression()?;
+        self.consume_where(
+            |k| matches!(k, TokenKind::RightParen),
+            "expected ')' after if condition",
+        )?;
+        let then_branch = self.parse_block_expr()?;
+        let else_branch = if self.match_where(|k| matches!(k, TokenKind::Else)) {
+            Some(self.parse_block_expr()?)
+        } else {
+            None
+        };
+        self.match_where(|k| matches!(k, TokenKind::Semicolon));
+        Ok(Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
             span,
         })
     }
@@ -798,6 +828,24 @@ impl Parser {
         let mut tail = None;
 
         while !self.check_where(|k| matches!(k, TokenKind::RightBrace)) && !self.is_at_end() {
+            if self.check_where(|k| matches!(k, TokenKind::If)) {
+                let checkpoint = self.current;
+                if let Ok(expr) = self.parse_expression() {
+                    if self.match_where(|k| matches!(k, TokenKind::Semicolon)) {
+                        let span = expr.span();
+                        statements.push(Stmt::Expression { expr, span });
+                        continue;
+                    }
+
+                    tail = Some(Box::new(expr));
+                    break;
+                }
+
+                self.current = checkpoint;
+                statements.push(self.parse_declaration()?);
+                continue;
+            }
+
             if self.check_where(|k| {
                 matches!(
                     k,
@@ -1151,6 +1199,7 @@ impl Parser {
                     | TokenKind::Enum
                     | TokenKind::Return
                     | TokenKind::While
+                    | TokenKind::If
                     | TokenKind::For
                     | TokenKind::Break
                     | TokenKind::Continue
@@ -1236,5 +1285,14 @@ fn run(v: Float) -> Option[Float] {
         let mut parser = Parser::new(tokens);
         let errors = parser.parse_program().expect_err("expected parser errors");
         assert!(errors.len() >= 2);
+    }
+
+    #[test]
+    fn parses_if_statement_without_else() {
+        let src = "let mut x: Int = 0; if (x == 0) { x = 1; } x;";
+        let tokens = Lexer::new(src).lex().expect("tokens");
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().expect("program");
+        assert_eq!(program.statements.len(), 3);
     }
 }

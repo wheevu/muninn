@@ -113,6 +113,13 @@ impl TypeChecker {
             },
         );
         checker.define_builtin(
+            "print_raw".to_string(),
+            Symbol {
+                ty: Ty::Function(vec![Ty::Unknown], Box::new(Ty::Void)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
             "len".to_string(),
             Symbol {
                 ty: Ty::Function(vec![Ty::Unknown], Box::new(Ty::Int)),
@@ -144,6 +151,62 @@ impl TypeChecker {
             "ones".to_string(),
             Symbol {
                 ty: Ty::Function(vec![Ty::Int], Box::new(Ty::Unknown)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
+            "sin".to_string(),
+            Symbol {
+                ty: Ty::Function(vec![Ty::Float], Box::new(Ty::Float)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
+            "cos".to_string(),
+            Symbol {
+                ty: Ty::Function(vec![Ty::Float], Box::new(Ty::Float)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
+            "floor".to_string(),
+            Symbol {
+                ty: Ty::Function(vec![Ty::Float], Box::new(Ty::Int)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
+            "round".to_string(),
+            Symbol {
+                ty: Ty::Function(vec![Ty::Float], Box::new(Ty::Int)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
+            "clamp".to_string(),
+            Symbol {
+                ty: Ty::Function(vec![Ty::Int, Ty::Int, Ty::Int], Box::new(Ty::Int)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
+            "sleep_ms".to_string(),
+            Symbol {
+                ty: Ty::Function(vec![Ty::Int], Box::new(Ty::Void)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
+            "make_string_buf".to_string(),
+            Symbol {
+                ty: Ty::Function(vec![Ty::Int], Box::new(Ty::Unknown)),
+                mutable: false,
+            },
+        );
+        checker.define_builtin(
+            "join_chars".to_string(),
+            Symbol {
+                ty: Ty::Function(vec![Ty::Unknown], Box::new(Ty::String)),
                 mutable: false,
             },
         );
@@ -390,6 +453,21 @@ impl TypeChecker {
                 self.loop_depth += 1;
                 self.check_block(body);
                 self.loop_depth = self.loop_depth.saturating_sub(1);
+            }
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+                span,
+            } => {
+                let cond_ty = self.check_expr(condition);
+                if cond_ty != Ty::Bool {
+                    self.error(*span, "if condition must be Bool".to_string());
+                }
+                self.check_block(then_branch);
+                if let Some(else_branch) = else_branch {
+                    self.check_block(else_branch);
+                }
             }
             Stmt::Break { span } => {
                 if self.loop_depth == 0 {
@@ -729,6 +807,64 @@ impl TypeChecker {
                                                 "{} currently requires a compile-time non-negative Int literal length",
                                                 name
                                             ),
+                                        );
+                                        Ty::Unknown
+                                    }
+                                }
+                            }
+                        }
+                        "make_string_buf" => {
+                            if arg_types.len() != 1 {
+                                self.error(*span, "make_string_buf expects 1 argument".to_string());
+                                Ty::Unknown
+                            } else if arg_types[0] != Ty::Int && arg_types[0] != Ty::Unknown {
+                                self.error(
+                                    *span,
+                                    "make_string_buf expects an Int length argument".to_string(),
+                                );
+                                Ty::Unknown
+                            } else {
+                                match &args[0] {
+                                    Expr::Int(len, _) if *len >= 0 => {
+                                        Ty::Array(Box::new(Ty::String), *len as usize)
+                                    }
+                                    Expr::Int(_, _) => {
+                                        self.error(
+                                            *span,
+                                            "make_string_buf length must be non-negative"
+                                                .to_string(),
+                                        );
+                                        Ty::Unknown
+                                    }
+                                    _ => Ty::Unknown,
+                                }
+                            }
+                        }
+                        "join_chars" => {
+                            if arg_types.len() != 1 {
+                                self.error(*span, "join_chars expects 1 argument".to_string());
+                                Ty::Unknown
+                            } else {
+                                match &arg_types[0] {
+                                    Ty::Array(element, _) => {
+                                        if matches!(element.as_ref(), Ty::String | Ty::Unknown) {
+                                            Ty::String
+                                        } else {
+                                            self.error(
+                                                *span,
+                                                format!(
+                                                    "join_chars expects String[], got {:?}",
+                                                    element
+                                                ),
+                                            );
+                                            Ty::Unknown
+                                        }
+                                    }
+                                    Ty::Unknown => Ty::String,
+                                    other => {
+                                        self.error(
+                                            *span,
+                                            format!("join_chars expects an array, got {:?}", other),
                                         );
                                         Ty::Unknown
                                     }
@@ -1368,6 +1504,16 @@ impl TypeChecker {
                 out.push(ty);
             }
             Stmt::While { body, .. } => self.collect_return_types_from_block(body, out),
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.collect_return_types_from_block(then_branch, out);
+                if let Some(else_branch) = else_branch {
+                    self.collect_return_types_from_block(else_branch, out);
+                }
+            }
             Stmt::Expression {
                 expr: Expr::Block(block),
                 ..

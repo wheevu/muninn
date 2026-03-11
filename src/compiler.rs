@@ -214,6 +214,28 @@ impl ModuleCompiler {
                     }
                 }
             }
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.compile_expr(compiler, condition);
+                let else_jump = compiler.emit_jump(OpCode::JumpIfFalse);
+                compiler.emit_op(OpCode::Pop);
+                self.compile_block(compiler, then_branch, false);
+
+                if let Some(else_branch) = else_branch {
+                    let end_jump = compiler.emit_jump(OpCode::Jump);
+                    compiler.patch_jump(else_jump);
+                    compiler.emit_op(OpCode::Pop);
+                    self.compile_block(compiler, else_branch, false);
+                    compiler.patch_jump(end_jump);
+                } else {
+                    compiler.patch_jump(else_jump);
+                    compiler.emit_op(OpCode::Pop);
+                }
+            }
             Stmt::ForRange { span, .. } => {
                 self.errors.push(MuninnError::new(
                     "compiler",
