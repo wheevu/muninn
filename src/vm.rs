@@ -1,75 +1,21 @@
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
+use std::sync::Arc;
 
-use crate::builtins::{BuiltinKind, BUILTINS};
-use crate::bytecode::{BytecodeModule, Chunk, Constant, OpCode};
+use crate::bytecode::{BytecodeModule, Chunk, Constant, GlobalValueKind, OpCode, validate_module};
+use crate::error::MuninnError;
+use crate::native::{
+    add_values, divide_values, invoke_native, multiply_values, registered_natives,
+    subtract_values,
+};
+use crate::runtime::{VmError, VmResult};
 use crate::span::Span;
+use crate::value::Value;
 
-pub type VmResult<T> = Result<T, VmError>;
-
-type NativeFn = fn(&[Value], Span) -> VmResult<Value>;
-
-#[derive(Debug, Clone)]
-pub struct VmError {
-    pub message: String,
-    pub span: Span,
-}
-
-impl VmError {
-    fn new(message: impl Into<String>, span: Span) -> Self {
-        Self {
-            message: message.into(),
-            span,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Value {
-    Int(i64),
-    Float(f64),
-    Bool(bool),
-    String(String),
-    Function(usize),
-    Native(BuiltinKind, NativeFn),
-    Nil,
-}
-
-impl Value {
-    pub fn stringify(&self) -> String {
-        match self {
-            Value::Int(value) => value.to_string(),
-            Value::Float(value) => {
-                if value.fract() == 0.0 {
-                    format!("{value:.1}")
-                } else {
-                    value.to_string()
-                }
-            }
-            Value::Bool(value) => value.to_string(),
-            Value::String(value) => value.clone(),
-            Value::Function(_) => "<fn>".to_string(),
-            Value::Native(_, _) => "<builtin>".to_string(),
-            Value::Nil => "nil".to_string(),
-        }
-    }
-
-    fn equals(&self, other: &Value) -> bool {
-        match (self, other) {
-            (Value::Int(left), Value::Int(right)) => left == right,
-            (Value::Float(left), Value::Float(right)) => left == right,
-            (Value::Bool(left), Value::Bool(right)) => left == right,
-            (Value::String(left), Value::String(right)) => left == right,
-            (Value::Nil, Value::Nil) => true,
-            _ => false,
-        }
-    }
-}
-
-impl Display for Value {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.stringify())
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReloadStatus {
+    Idle,
+    Pending,
+    Ready,
 }
 
 pub struct Vm {
@@ -77,330 +23,460 @@ pub struct Vm {
     globals: HashMap<String, Value>,
     stack: Vec<Value>,
     frames: Vec<CallFrame>,
+    started: bool,
+    pending_reload: Option<BytecodeModule>,
+    preserve_existing_globals: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
 struct CallFrame {
     function_id: usize,
     ip: usize,
-    locals: Vec<Value>,
+    stack_base: usize,
 }
 
 impl Vm {
     pub fn new(module: BytecodeModule) -> Self {
         let mut vm = Self {
-            module,
             globals: HashMap::new(),
             stack: Vec::new(),
             frames: Vec::new(),
+            started: false,
+            pending_reload: None,
+            preserve_existing_globals: false,
+            module,
         };
-        vm.install_builtins();
+        vm.install_natives();
+        vm.reserve_runtime_capacity(
+            vm.module.estimated_stack_capacity(),
+            vm.module.estimated_frame_capacity(),
+        );
         vm
     }
 
-    pub fn run(&mut self) -> VmResult<Value> {
-        self.stack.clear();
-        self.frames.clear();
-        self.push_frame(self.module.entry_function, Vec::new(), Span::default())?;
-        self.execute_loop()
-    }
-
-    fn install_builtins(&mut self) {
-        for spec in BUILTINS {
-            let native = match spec.kind {
-                BuiltinKind::Print => Value::Native(BuiltinKind::Print, native_print),
-                BuiltinKind::Assert => Value::Native(BuiltinKind::Assert, native_assert),
-            };
-            self.globals.insert(spec.name.to_string(), native);
+    pub fn reserve_runtime_capacity(&mut self, stack_capacity: usize, frame_capacity: usize) {
+        if self.stack.capacity() < stack_capacity {
+            self.stack.reserve(stack_capacity - self.stack.capacity());
+        }
+        if self.frames.capacity() < frame_capacity {
+            self.frames.reserve(frame_capacity - self.frames.capacity());
         }
     }
 
-    fn execute_loop(&mut self) -> VmResult<Value> {
+    pub fn run(&mut self) -> VmResult<Value> {
+        self.ensure_started(Span::default())?;
         loop {
-            if self.frames.is_empty() {
-                return Ok(self.stack.pop().unwrap_or(Value::Nil));
+            if self.poll_safe_point() == ReloadStatus::Ready {
+                self.apply_pending_reload()?;
             }
 
-            let frame_index = self.frames.len() - 1;
-            let function_id = self.frames[frame_index].function_id;
-            let function = self
-                .module
-                .functions
-                .get(function_id)
-                .ok_or_else(|| {
-                    VmError::new(
-                        format!("invalid function id {}", function_id),
-                        Span::default(),
-                    )
-                })?
-                .clone();
-            let ip = self.frames[frame_index].ip;
-            let chunk = &function.chunk;
-            let span = chunk.span_at(ip);
-            let byte = *chunk
-                .code
-                .get(ip)
-                .ok_or_else(|| VmError::new("instruction pointer out of range", span))?;
-            let op = OpCode::from_byte(byte)
-                .ok_or_else(|| VmError::new(format!("invalid opcode {}", byte), span))?;
-            self.frames[frame_index].ip += 1;
+            if let Some(value) = self.step_instruction()? {
+                return Ok(value);
+            }
+        }
+    }
 
-            match op {
-                OpCode::Constant => {
-                    let index = self.read_u16(frame_index, chunk, span)? as usize;
-                    let constant = chunk.constants.get(index).ok_or_else(|| {
-                        VmError::new(format!("invalid constant index {}", index), span)
-                    })?;
-                    self.stack.push(self.constant_to_value(constant));
-                }
-                OpCode::Nil => self.stack.push(Value::Nil),
-                OpCode::True => self.stack.push(Value::Bool(true)),
-                OpCode::False => self.stack.push(Value::Bool(false)),
-                OpCode::Pop => {
-                    self.stack.pop();
-                }
-                OpCode::GetLocal => {
-                    let slot = self.read_u16(frame_index, chunk, span)? as usize;
-                    let value = self.frames[frame_index]
-                        .locals
-                        .get(slot)
-                        .cloned()
-                        .ok_or_else(|| {
-                            VmError::new(format!("invalid local slot {}", slot), span)
-                        })?;
-                    self.stack.push(value);
-                }
-                OpCode::SetLocal => {
-                    let slot = self.read_u16(frame_index, chunk, span)? as usize;
-                    let value = self
-                        .stack
-                        .pop()
-                        .ok_or_else(|| VmError::new("stack underflow", span))?;
-                    if self.frames[frame_index].locals.len() <= slot {
-                        self.frames[frame_index].locals.resize(slot + 1, Value::Nil);
-                    }
-                    self.frames[frame_index].locals[slot] = value;
-                }
-                OpCode::DefineGlobal => {
-                    let name = self.read_name(frame_index, chunk, span)?;
-                    let value = self
-                        .stack
-                        .pop()
-                        .ok_or_else(|| VmError::new("stack underflow", span))?;
+    pub fn step_instruction(&mut self) -> VmResult<Option<Value>> {
+        self.ensure_started(Span::default())?;
+        self.execute_instruction()
+    }
+
+    pub fn request_reload(&mut self, module: BytecodeModule) -> VmResult<()> {
+        validate_module(&module).map_err(first_validation_error)?;
+        self.pending_reload = Some(module);
+        Ok(())
+    }
+
+    pub fn poll_safe_point(&self) -> ReloadStatus {
+        if self.pending_reload.is_none() {
+            ReloadStatus::Idle
+        } else if self.is_safe_point() {
+            ReloadStatus::Ready
+        } else {
+            ReloadStatus::Pending
+        }
+    }
+
+    pub fn apply_pending_reload(&mut self) -> VmResult<()> {
+        if self.pending_reload.is_none() {
+            return Ok(());
+        }
+        if !self.is_safe_point() {
+            return Err(VmError::new(
+                "reload is only allowed at a safe point",
+                Span::default(),
+            ));
+        }
+
+        let pending = self.pending_reload.take().expect("pending reload");
+        if let Err(error) = self.validate_reload_compatibility(&pending) {
+            return Err(error);
+        }
+
+        self.module = pending;
+        self.started = false;
+        self.preserve_existing_globals = true;
+        self.reserve_runtime_capacity(
+            self.module.estimated_stack_capacity(),
+            self.module.estimated_frame_capacity(),
+        );
+        self.ensure_started(Span::default())
+    }
+
+    pub fn frame_depth(&self) -> usize {
+        self.frames.len()
+    }
+
+    pub fn global(&self, name: &str) -> Option<&Value> {
+        self.globals.get(name)
+    }
+
+    fn install_natives(&mut self) {
+        for native in registered_natives() {
+            self.globals
+                .insert(native.name.to_string(), Value::Native(native.kind));
+        }
+    }
+
+    fn ensure_started(&mut self, span: Span) -> VmResult<()> {
+        if self.started {
+            return Ok(());
+        }
+        self.stack.clear();
+        self.frames.clear();
+        self.push_frame(self.module.entry_function, 0, span)?;
+        self.started = true;
+        Ok(())
+    }
+
+    fn execute_instruction(&mut self) -> VmResult<Option<Value>> {
+        if self.frames.is_empty() {
+            self.started = false;
+            self.preserve_existing_globals = false;
+            return Ok(Some(self.stack.pop().unwrap_or(Value::Nil)));
+        }
+
+        let frame_index = self.frames.len() - 1;
+        let function_id = self.frames[frame_index].function_id;
+        let ip = self.frames[frame_index].ip;
+        let span = self.current_chunk(function_id).span_at(ip);
+        let byte = *self
+            .current_chunk(function_id)
+            .code
+            .get(ip)
+            .ok_or_else(|| VmError::new("instruction pointer out of range", span))?;
+        let op = OpCode::from_byte(byte)
+            .ok_or_else(|| VmError::new(format!("invalid opcode {}", byte), span))?;
+        self.frames[frame_index].ip += 1;
+
+        match op {
+            OpCode::Constant => {
+                let index = self.read_u16(frame_index, span)? as usize;
+                let constant = self
+                    .current_chunk(function_id)
+                    .constants
+                    .get(index)
+                    .ok_or_else(|| VmError::new(format!("invalid constant index {}", index), span))?;
+                self.stack.push(self.constant_to_value(constant));
+            }
+            OpCode::Nil => self.stack.push(Value::Nil),
+            OpCode::True => self.stack.push(Value::Bool(true)),
+            OpCode::False => self.stack.push(Value::Bool(false)),
+            OpCode::Pop => {
+                self.stack.pop();
+            }
+            OpCode::GetLocal => {
+                let slot = self.read_u16(frame_index, span)? as usize;
+                let stack_index = self.local_stack_index(frame_index, slot, span)?;
+                self.stack.push(self.stack[stack_index].clone());
+            }
+            OpCode::SetLocal => {
+                let slot = self.read_u16(frame_index, span)? as usize;
+                let value = self.pop(span)?;
+                let stack_index = self.local_stack_index(frame_index, slot, span)?;
+                self.stack[stack_index] = value;
+            }
+            OpCode::DefineGlobal => {
+                let name = self.read_name(frame_index, span)?;
+                let value = self.pop(span)?;
+                let preserve = self.preserve_existing_globals
+                    && self.globals.contains_key(&name)
+                    && self.module.global_kind(&name) != Some(GlobalValueKind::Function);
+                if !preserve {
                     self.globals.insert(name, value);
                 }
-                OpCode::GetGlobal => {
-                    let name = self.read_name(frame_index, chunk, span)?;
-                    let value =
-                        self.globals.get(&name).cloned().ok_or_else(|| {
-                            VmError::new(format!("unknown global '{}'", name), span)
-                        })?;
-                    self.stack.push(value);
+            }
+            OpCode::GetGlobal => {
+                let name = self.read_name(frame_index, span)?;
+                let value = self
+                    .globals
+                    .get(&name)
+                    .cloned()
+                    .ok_or_else(|| VmError::new(format!("unknown global '{}'", name), span))?;
+                self.stack.push(value);
+            }
+            OpCode::SetGlobal => {
+                let name = self.read_name(frame_index, span)?;
+                let value = self.pop(span)?;
+                if !self.globals.contains_key(&name) {
+                    return Err(VmError::new(format!("unknown global '{}'", name), span));
                 }
-                OpCode::SetGlobal => {
-                    let name = self.read_name(frame_index, chunk, span)?;
-                    let value = self
-                        .stack
-                        .pop()
-                        .ok_or_else(|| VmError::new("stack underflow", span))?;
-                    if !self.globals.contains_key(&name) {
-                        return Err(VmError::new(format!("unknown global '{}'", name), span));
+                self.globals.insert(name, value);
+            }
+            OpCode::Add => {
+                let right = self.pop(span)?;
+                let left = self.pop(span)?;
+                self.stack.push(add_values(left, right, span)?);
+            }
+            OpCode::Subtract => {
+                let right = self.pop(span)?;
+                let left = self.pop(span)?;
+                self.stack.push(subtract_values(left, right, span)?);
+            }
+            OpCode::Multiply => {
+                let right = self.pop(span)?;
+                let left = self.pop(span)?;
+                self.stack.push(multiply_values(left, right, span)?);
+            }
+            OpCode::Divide => {
+                let right = self.pop(span)?;
+                let left = self.pop(span)?;
+                self.stack.push(divide_values(left, right, span)?);
+            }
+            OpCode::Negate => {
+                let value = self.pop(span)?;
+                match value {
+                    Value::Int(value) => {
+                        let negated = value
+                            .checked_neg()
+                            .ok_or_else(|| VmError::new("integer overflow in negation", span))?;
+                        self.stack.push(Value::Int(negated));
                     }
-                    self.globals.insert(name, value);
-                }
-                OpCode::Add => {
-                    let right = self.pop(span)?;
-                    let left = self.pop(span)?;
-                    self.stack.push(add_values(left, right, span)?);
-                }
-                OpCode::Subtract => {
-                    self.numeric_binary(span, IntNumericOp::Subtract, |left, right| left - right)?
-                }
-                OpCode::Multiply => {
-                    self.numeric_binary(span, IntNumericOp::Multiply, |left, right| left * right)?
-                }
-                OpCode::Divide => {
-                    self.numeric_binary(span, IntNumericOp::Divide, |left, right| left / right)?
-                }
-                OpCode::Negate => {
-                    let value = self.pop(span)?;
-                    match value {
-                        Value::Int(value) => {
-                            let negated = value.checked_neg().ok_or_else(|| {
-                                VmError::new("integer overflow in negation", span)
-                            })?;
-                            self.stack.push(Value::Int(negated));
-                        }
-                        Value::Float(value) => self.stack.push(Value::Float(-value)),
-                        other => {
-                            return Err(VmError::new(
-                                format!("cannot negate {}", other.stringify()),
-                                span,
-                            ));
-                        }
-                    }
-                }
-                OpCode::Not => {
-                    let value = self.pop(span)?;
-                    match value {
-                        Value::Bool(value) => self.stack.push(Value::Bool(!value)),
-                        other => {
-                            return Err(VmError::new(
-                                format!("cannot apply '!' to {}", other.stringify()),
-                                span,
-                            ));
-                        }
-                    }
-                }
-                OpCode::Equal => {
-                    let right = self.pop(span)?;
-                    let left = self.pop(span)?;
-                    self.stack.push(Value::Bool(left.equals(&right)));
-                }
-                OpCode::Greater => self.ordering_compare(span, |ord| ord.is_gt())?,
-                OpCode::Less => self.ordering_compare(span, |ord| ord.is_lt())?,
-                OpCode::JumpIfFalse => {
-                    let jump = self.read_u16(frame_index, chunk, span)? as usize;
-                    let condition = self
-                        .stack
-                        .last()
-                        .cloned()
-                        .ok_or_else(|| VmError::new("stack underflow", span))?;
-                    match condition {
-                        Value::Bool(value) => {
-                            if !value {
-                                self.frames[frame_index].ip += jump;
-                            }
-                        }
-                        other => {
-                            return Err(VmError::new(
-                                format!("condition must be Bool, got {}", other.stringify()),
-                                span,
-                            ));
-                        }
-                    }
-                }
-                OpCode::Jump => {
-                    let jump = self.read_u16(frame_index, chunk, span)? as usize;
-                    self.frames[frame_index].ip += jump;
-                }
-                OpCode::Loop => {
-                    let jump = self.read_u16(frame_index, chunk, span)? as usize;
-                    self.frames[frame_index].ip = self.frames[frame_index].ip.saturating_sub(jump);
-                }
-                OpCode::Call => {
-                    let arg_count = self.read_u8(frame_index, chunk, span)? as usize;
-                    let mut args = Vec::with_capacity(arg_count);
-                    for _ in 0..arg_count {
-                        args.push(self.pop(span)?);
-                    }
-                    args.reverse();
-                    let callee = self.pop(span)?;
-                    match callee {
-                        Value::Function(function_id) => {
-                            self.push_frame(function_id, args, span)?;
-                        }
-                        Value::Native(_, function) => {
-                            let value = function(&args, span)?;
-                            self.stack.push(value);
-                        }
-                        other => {
-                            return Err(VmError::new(
-                                format!("{} is not callable", other.stringify()),
-                                span,
-                            ));
-                        }
-                    }
-                }
-                OpCode::Return => {
-                    let value = self.stack.pop().unwrap_or(Value::Nil);
-                    if function.expects_return_value && matches!(value, Value::Nil) {
+                    Value::Float(value) => self.stack.push(Value::Float(-value)),
+                    other => {
                         return Err(VmError::new(
-                            format!(
-                                "function '{}' fell through without returning a value",
-                                function.name
-                            ),
+                            format!("cannot negate {}", other.stringify()),
                             span,
                         ));
                     }
-                    self.frames.pop();
-                    if self.frames.is_empty() {
-                        return Ok(value);
-                    }
-                    self.stack.push(value);
                 }
             }
+            OpCode::Not => {
+                let value = self.pop(span)?;
+                match value {
+                    Value::Bool(value) => self.stack.push(Value::Bool(!value)),
+                    other => {
+                        return Err(VmError::new(
+                            format!("cannot apply '!' to {}", other.stringify()),
+                            span,
+                        ));
+                    }
+                }
+            }
+            OpCode::Equal => {
+                let right = self.pop(span)?;
+                let left = self.pop(span)?;
+                self.stack.push(Value::Bool(left.equals(&right)));
+            }
+            OpCode::Greater => self.ordering_compare(span, |ord| ord.is_gt())?,
+            OpCode::Less => self.ordering_compare(span, |ord| ord.is_lt())?,
+            OpCode::JumpIfFalse => {
+                let jump = self.read_u16(frame_index, span)? as usize;
+                let condition = self
+                    .stack
+                    .last()
+                    .cloned()
+                    .ok_or_else(|| VmError::new("stack underflow", span))?;
+                match condition {
+                    Value::Bool(value) => {
+                        if !value {
+                            self.frames[frame_index].ip += jump;
+                        }
+                    }
+                    other => {
+                        return Err(VmError::new(
+                            format!("condition must be Bool, got {}", other.stringify()),
+                            span,
+                        ));
+                    }
+                }
+            }
+            OpCode::Jump => {
+                let jump = self.read_u16(frame_index, span)? as usize;
+                self.frames[frame_index].ip += jump;
+            }
+            OpCode::Loop => {
+                let jump = self.read_u16(frame_index, span)? as usize;
+                self.frames[frame_index].ip = self.frames[frame_index].ip.saturating_sub(jump);
+            }
+            OpCode::Call => {
+                let arg_count = self.read_u8(frame_index, span)? as usize;
+                self.call_value(arg_count, span)?;
+            }
+            OpCode::Return => {
+                let value = self.stack.pop().unwrap_or(Value::Nil);
+                let function = &self.module.functions[function_id];
+                if function.expects_return_value && matches!(value, Value::Nil) {
+                    return Err(VmError::new(
+                        format!(
+                            "function '{}' fell through without returning a value",
+                            function.name
+                        ),
+                        span,
+                    ));
+                }
+
+                let frame = self.frames.pop().expect("frame");
+                self.stack.truncate(frame.stack_base);
+                if self.frames.is_empty() {
+                    self.started = false;
+                    self.preserve_existing_globals = false;
+                    return Ok(Some(value));
+                }
+                self.stack.push(value);
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn is_safe_point(&self) -> bool {
+        self.frames.len() <= 1
+    }
+
+    fn validate_reload_compatibility(&self, next_module: &BytecodeModule) -> VmResult<()> {
+        if next_module.entry_function >= next_module.functions.len() {
+            return Err(VmError::new(
+                "reload module is missing a valid entry function",
+                Span::default(),
+            ));
+        }
+
+        for (name, value) in &self.globals {
+            if matches!(value, Value::Native(_)) {
+                continue;
+            }
+
+            let Some(expected_kind) = next_module.global_kind(name) else {
+                return Err(VmError::new(
+                    format!("reload rejected: global '{}' is missing in new module", name),
+                    Span::default(),
+                ));
+            };
+
+            if !value_matches_kind(value, expected_kind) {
+                return Err(VmError::new(
+                    format!(
+                        "reload rejected: global '{}' changed kind from {} to {:?}",
+                        name,
+                        value.kind_name(),
+                        expected_kind
+                    ),
+                    Span::default(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn current_chunk(&self, function_id: usize) -> &Chunk {
+        &self.module.functions[function_id].chunk
+    }
+
+    fn read_u8(&mut self, frame_index: usize, span: Span) -> VmResult<u8> {
+        let function_id = self.frames[frame_index].function_id;
+        let ip = self.frames[frame_index].ip;
+        let byte = *self
+            .current_chunk(function_id)
+            .code
+            .get(ip)
+            .ok_or_else(|| VmError::new("instruction pointer out of range", span))?;
+        self.frames[frame_index].ip += 1;
+        Ok(byte)
+    }
+
+    fn read_u16(&mut self, frame_index: usize, span: Span) -> VmResult<u16> {
+        let low = self.read_u8(frame_index, span)?;
+        let high = self.read_u8(frame_index, span)?;
+        Ok(u16::from_le_bytes([low, high]))
+    }
+
+    fn read_name(&mut self, frame_index: usize, span: Span) -> VmResult<String> {
+        let function_id = self.frames[frame_index].function_id;
+        let index = self.read_u16(frame_index, span)? as usize;
+        let constant = self
+            .current_chunk(function_id)
+            .constants
+            .get(index)
+            .ok_or_else(|| VmError::new(format!("invalid constant index {}", index), span))?;
+        if let Constant::String(name) = constant {
+            Ok(name.clone())
+        } else {
+            Err(VmError::new("expected string constant", span))
         }
     }
 
-    fn push_frame(&mut self, function_id: usize, args: Vec<Value>, span: Span) -> VmResult<()> {
-        let function =
-            self.module.functions.get(function_id).ok_or_else(|| {
-                VmError::new(format!("invalid function id {}", function_id), span)
-            })?;
-        if function.arity != args.len() {
+    fn local_stack_index(&self, frame_index: usize, slot: usize, span: Span) -> VmResult<usize> {
+        let function_id = self.frames[frame_index].function_id;
+        let local_count = self.module.functions[function_id].local_count;
+        if slot >= local_count {
+            return Err(VmError::new(format!("invalid local slot {}", slot), span));
+        }
+        Ok(self.frames[frame_index].stack_base + slot)
+    }
+
+    fn call_value(&mut self, arg_count: usize, span: Span) -> VmResult<()> {
+        if self.stack.len() < arg_count + 1 {
+            return Err(VmError::new("stack underflow", span));
+        }
+
+        let callee_index = self.stack.len() - arg_count - 1;
+        let callee = self.stack[callee_index].clone();
+        match callee {
+            Value::Function(function_id) => {
+                self.stack.remove(callee_index);
+                self.push_frame(function_id, arg_count, span)
+            }
+            Value::Native(kind) => {
+                let result = invoke_native(kind, &self.stack[callee_index + 1..], span)?;
+                self.stack.truncate(callee_index);
+                self.stack.push(result);
+                Ok(())
+            }
+            other => Err(VmError::new(
+                format!("{} is not callable", other.stringify()),
+                span,
+            )),
+        }
+    }
+
+    fn push_frame(&mut self, function_id: usize, arg_count: usize, span: Span) -> VmResult<()> {
+        let function = self
+            .module
+            .functions
+            .get(function_id)
+            .ok_or_else(|| VmError::new(format!("invalid function id {}", function_id), span))?;
+        if function.arity != arg_count {
             return Err(VmError::new(
                 format!(
                     "function '{}' expects {} arguments, got {}",
-                    function.name,
-                    function.arity,
-                    args.len()
+                    function.name, function.arity, arg_count
                 ),
                 span,
             ));
         }
-        let mut locals = vec![Value::Nil; function.local_count.max(args.len())];
-        for (slot, arg) in args.into_iter().enumerate() {
-            locals[slot] = arg;
+
+        let stack_base = self.stack.len().saturating_sub(arg_count);
+        for _ in arg_count..function.local_count {
+            self.stack.push(Value::Nil);
         }
         self.frames.push(CallFrame {
             function_id,
             ip: 0,
-            locals,
+            stack_base,
         });
         Ok(())
-    }
-
-    fn numeric_binary(
-        &mut self,
-        span: Span,
-        int_op: IntNumericOp,
-        float_op: impl FnOnce(f64, f64) -> f64,
-    ) -> VmResult<()> {
-        let right = self.pop(span)?;
-        let left = self.pop(span)?;
-        match (left, right) {
-            (Value::Int(left), Value::Int(right)) => {
-                let value = match int_op {
-                    IntNumericOp::Subtract => left
-                        .checked_sub(right)
-                        .ok_or_else(|| VmError::new("integer overflow in subtraction", span))?,
-                    IntNumericOp::Multiply => left
-                        .checked_mul(right)
-                        .ok_or_else(|| VmError::new("integer overflow in multiplication", span))?,
-                    IntNumericOp::Divide => {
-                        if right == 0 {
-                            return Err(VmError::new("division by zero", span));
-                        }
-                        left.checked_div(right)
-                            .ok_or_else(|| VmError::new("integer overflow in division", span))?
-                    }
-                };
-                self.stack.push(Value::Int(value));
-                Ok(())
-            }
-            (Value::Float(left), Value::Float(right)) => {
-                self.stack.push(Value::Float(float_op(left, right)));
-                Ok(())
-            }
-            (left, right) => Err(VmError::new(
-                format!(
-                    "numeric operation expects matching numeric types, got {} and {}",
-                    left.stringify(),
-                    right.stringify()
-                ),
-                span,
-            )),
-        }
     }
 
     fn ordering_compare(
@@ -433,41 +509,12 @@ impl Vm {
         }
     }
 
-    fn read_u8(&mut self, frame_index: usize, chunk: &Chunk, span: Span) -> VmResult<u8> {
-        let ip = self.frames[frame_index].ip;
-        let byte = *chunk
-            .code
-            .get(ip)
-            .ok_or_else(|| VmError::new("instruction pointer out of range", span))?;
-        self.frames[frame_index].ip += 1;
-        Ok(byte)
-    }
-
-    fn read_u16(&mut self, frame_index: usize, chunk: &Chunk, span: Span) -> VmResult<u16> {
-        let low = self.read_u8(frame_index, chunk, span)?;
-        let high = self.read_u8(frame_index, chunk, span)?;
-        Ok(u16::from_le_bytes([low, high]))
-    }
-
-    fn read_name(&mut self, frame_index: usize, chunk: &Chunk, span: Span) -> VmResult<String> {
-        let index = self.read_u16(frame_index, chunk, span)? as usize;
-        let constant = chunk
-            .constants
-            .get(index)
-            .ok_or_else(|| VmError::new(format!("invalid constant index {}", index), span))?;
-        if let Constant::String(name) = constant {
-            Ok(name.clone())
-        } else {
-            Err(VmError::new("expected string constant", span))
-        }
-    }
-
     fn constant_to_value(&self, constant: &Constant) -> Value {
         match constant {
             Constant::Int(value) => Value::Int(*value),
             Constant::Float(value) => Value::Float(*value),
             Constant::Bool(value) => Value::Bool(*value),
-            Constant::String(value) => Value::String(value.clone()),
+            Constant::String(value) => Value::String(Arc::<str>::from(value.as_str())),
             Constant::Function(value) => Value::Function(*value),
             Constant::Nil => Value::Nil,
         }
@@ -480,52 +527,22 @@ impl Vm {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum IntNumericOp {
-    Subtract,
-    Multiply,
-    Divide,
-}
-
-fn add_values(left: Value, right: Value, span: Span) -> VmResult<Value> {
-    match (left, right) {
-        (Value::Int(left), Value::Int(right)) => {
-            let value = left
-                .checked_add(right)
-                .ok_or_else(|| VmError::new("integer overflow in addition", span))?;
-            Ok(Value::Int(value))
-        }
-        (Value::Float(left), Value::Float(right)) => Ok(Value::Float(left + right)),
-        (Value::String(left), Value::String(right)) => Ok(Value::String(left + &right)),
-        (left, right) => Err(VmError::new(
-            format!(
-                "'+' expects matching Int, Float, or String operands, got {} and {}",
-                left.stringify(),
-                right.stringify()
-            ),
-            span,
-        )),
+fn value_matches_kind(value: &Value, kind: GlobalValueKind) -> bool {
+    match (value, kind) {
+        (Value::Int(_), GlobalValueKind::Int)
+        | (Value::Float(_), GlobalValueKind::Float)
+        | (Value::Bool(_), GlobalValueKind::Bool)
+        | (Value::String(_), GlobalValueKind::String)
+        | (Value::Tensor(_), GlobalValueKind::Tensor)
+        | (Value::Function(_), GlobalValueKind::Function) => true,
+        _ => false,
     }
 }
 
-fn native_print(args: &[Value], span: Span) -> VmResult<Value> {
-    if args.len() != 1 {
-        return Err(VmError::new("print expects exactly 1 argument", span));
-    }
-    println!("{}", args[0]);
-    Ok(Value::Nil)
-}
-
-fn native_assert(args: &[Value], span: Span) -> VmResult<Value> {
-    if args.len() != 1 {
-        return Err(VmError::new("assert expects exactly 1 argument", span));
-    }
-    match args[0] {
-        Value::Bool(true) => Ok(Value::Nil),
-        Value::Bool(false) => Err(VmError::new("assertion failed", span)),
-        ref other => Err(VmError::new(
-            format!("assert expects Bool, got {}", other.stringify()),
-            span,
-        )),
-    }
+fn first_validation_error(errors: Vec<MuninnError>) -> VmError {
+    let first = errors
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| MuninnError::new("compiler", "invalid bytecode module", Span::default()));
+    VmError::new(first.message, first.span)
 }

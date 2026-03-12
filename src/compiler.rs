@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    BinaryOp, Expr, ExprKind, FunctionDecl, Program, Stmt, StmtKind, TypeExpr, UnaryOp,
+    BinaryOp, Block, Expr, ExprKind, FunctionDecl, Program, Stmt, StmtKind, TypeExpr, UnaryOp,
 };
 use crate::bytecode::{
     BytecodeModule, Chunk, Constant, FunctionBytecode, OpCode, validate_module,
@@ -96,9 +96,7 @@ impl ModuleCompiler {
         for param in &function.params {
             compiler.define_parameter(param.name.clone());
         }
-        for statement in &function.body.statements {
-            self.compile_stmt(&mut compiler, statement);
-        }
+        self.compile_block(&mut compiler, &function.body, false);
         compiler.emit_op(OpCode::Nil, function.span);
         compiler.emit_op(OpCode::Return, function.span);
         self.push_function(compiler.finish())
@@ -140,11 +138,7 @@ impl ModuleCompiler {
                 self.compile_expr(compiler, condition);
                 let exit_jump = compiler.emit_jump(OpCode::JumpIfFalse, stmt.span);
                 compiler.emit_op(OpCode::Pop, stmt.span);
-                compiler.enter_scope();
-                for body_stmt in &body.statements {
-                    self.compile_stmt(compiler, body_stmt);
-                }
-                compiler.exit_scope();
+                self.compile_block(compiler, body, false);
                 compiler.emit_loop(loop_start, stmt.span);
                 compiler.patch_jump(exit_jump, stmt.span, &mut self.errors);
                 compiler.emit_op(OpCode::Pop, stmt.span);
@@ -157,20 +151,12 @@ impl ModuleCompiler {
                 self.compile_expr(compiler, condition);
                 let else_jump = compiler.emit_jump(OpCode::JumpIfFalse, stmt.span);
                 compiler.emit_op(OpCode::Pop, stmt.span);
-                compiler.enter_scope();
-                for then_stmt in &then_branch.statements {
-                    self.compile_stmt(compiler, then_stmt);
-                }
-                compiler.exit_scope();
+                self.compile_block(compiler, then_branch, false);
                 let end_jump = else_branch.as_ref().map(|_| compiler.emit_jump(OpCode::Jump, stmt.span));
                 compiler.patch_jump(else_jump, stmt.span, &mut self.errors);
                 compiler.emit_op(OpCode::Pop, stmt.span);
                 if let Some(else_branch) = else_branch {
-                    compiler.enter_scope();
-                    for else_stmt in &else_branch.statements {
-                        self.compile_stmt(compiler, else_stmt);
-                    }
-                    compiler.exit_scope();
+                    self.compile_block(compiler, else_branch, false);
                 }
                 if let Some(end_jump) = end_jump {
                     compiler.patch_jump(end_jump, stmt.span, &mut self.errors);
@@ -219,6 +205,7 @@ impl ModuleCompiler {
                 }
             }
             ExprKind::Grouping(inner) => self.compile_expr(compiler, inner),
+            ExprKind::Block(block) => self.compile_block(compiler, block, true),
             ExprKind::Unary { op, expr: inner } => {
                 self.compile_expr(compiler, inner);
                 match op {
@@ -289,7 +276,43 @@ impl ModuleCompiler {
                 compiler.emit_op(OpCode::Call, expr.span);
                 compiler.emit_u8(args.len() as u8, expr.span);
             }
+            ExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.compile_expr(compiler, condition);
+                let else_jump = compiler.emit_jump(OpCode::JumpIfFalse, expr.span);
+                compiler.emit_op(OpCode::Pop, expr.span);
+                self.compile_block(compiler, then_branch, true);
+                let end_jump = compiler.emit_jump(OpCode::Jump, expr.span);
+                compiler.patch_jump(else_jump, expr.span, &mut self.errors);
+                compiler.emit_op(OpCode::Pop, expr.span);
+                self.compile_block(compiler, else_branch, true);
+                compiler.patch_jump(end_jump, expr.span, &mut self.errors);
+            }
         }
+    }
+
+    fn compile_block(
+        &mut self,
+        compiler: &mut FunctionCompiler,
+        block: &Block,
+        preserve_value: bool,
+    ) {
+        compiler.enter_scope();
+        for statement in &block.statements {
+            self.compile_stmt(compiler, statement);
+        }
+        if let Some(value) = &block.value {
+            self.compile_expr(compiler, value);
+            if !preserve_value {
+                compiler.emit_op(OpCode::Pop, value.span);
+            }
+        } else if preserve_value {
+            compiler.emit_op(OpCode::Nil, block.span);
+        }
+        compiler.exit_scope();
     }
 }
 

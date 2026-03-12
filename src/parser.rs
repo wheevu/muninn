@@ -185,15 +185,7 @@ impl Parser {
 
     fn parse_if_statement(&mut self) -> Result<Stmt, MuninnError> {
         let start = self.previous().span;
-        self.consume_simple(TokenKind::LeftParen, "expected '(' after 'if'")?;
-        let condition = self.parse_expression()?;
-        self.consume_simple(TokenKind::RightParen, "expected ')' after if condition")?;
-        let then_branch = self.parse_block()?;
-        let else_branch = if self.match_simple(TokenKind::Else) {
-            Some(self.parse_block()?)
-        } else {
-            None
-        };
+        let (condition, then_branch, else_branch) = self.parse_if_parts(false)?;
         let span = start.merge(else_branch.as_ref().map(|block| block.span).unwrap_or(then_branch.span));
         Ok(Stmt {
             id: self.alloc_id(),
@@ -240,9 +232,58 @@ impl Parser {
 
     fn parse_block(&mut self) -> Result<Block, MuninnError> {
         let start = self.consume_simple(TokenKind::LeftBrace, "expected '{'")?.span;
+        self.parse_block_after_left_brace(start, false)
+    }
+
+    fn parse_block_after_left_brace(
+        &mut self,
+        start: crate::span::Span,
+        allow_trailing_if_expr: bool,
+    ) -> Result<Block, MuninnError> {
         let mut statements = Vec::new();
+        let mut value = None;
         while !self.check_simple(TokenKind::RightBrace) && !self.is_at_end() {
-            statements.push(self.parse_statement(true)?);
+            if allow_trailing_if_expr && self.check_simple(TokenKind::If) {
+                let checkpoint = (self.current, self.next_node_id);
+                let token = self.advance().clone();
+                match self.parse_if_expression(token.span) {
+                    Ok(expr) if self.match_simple(TokenKind::Semicolon) => {
+                        let end_span = self.previous().span;
+                        statements.push(Stmt {
+                            id: self.alloc_id(),
+                            kind: StmtKind::Expr(expr.clone()),
+                            span: expr.span.merge(end_span),
+                        });
+                        continue;
+                    }
+                    Ok(expr) if self.check_simple(TokenKind::RightBrace) => {
+                        value = Some(Box::new(expr));
+                        break;
+                    }
+                    Ok(_) | Err(_) => {
+                        self.current = checkpoint.0;
+                        self.next_node_id = checkpoint.1;
+                    }
+                }
+            }
+
+            if self.starts_statement_in_block() {
+                statements.push(self.parse_statement(true)?);
+                continue;
+            }
+
+            let expr = self.parse_expression()?;
+            if self.match_simple(TokenKind::Semicolon) {
+                let end_span = self.previous().span;
+                statements.push(Stmt {
+                    id: self.alloc_id(),
+                    kind: StmtKind::Expr(expr.clone()),
+                    span: expr.span.merge(end_span),
+                });
+            } else {
+                value = Some(Box::new(expr));
+                break;
+            }
         }
         let end_span = self
             .consume_simple(TokenKind::RightBrace, "expected '}' after block")?
@@ -250,6 +291,7 @@ impl Parser {
         Ok(Block {
             id: self.alloc_id(),
             statements,
+            value,
             span: start.merge(end_span),
         })
     }
@@ -460,6 +502,16 @@ impl Parser {
             TokenKind::False => ExprKind::Bool(false),
             TokenKind::StringLiteral(value) => ExprKind::String(value),
             TokenKind::Identifier(name) => ExprKind::Variable(name),
+            TokenKind::If => return self.parse_if_expression(token.span),
+            TokenKind::LeftBrace => {
+                let block = self.parse_block_after_left_brace(token.span, true)?;
+                let span = block.span;
+                return Ok(Expr {
+                    id: self.alloc_id(),
+                    kind: ExprKind::Block(block),
+                    span,
+                });
+            }
             TokenKind::LeftParen => {
                 let expr = self.parse_expression()?;
                 let end_span = self
@@ -494,6 +546,7 @@ impl Parser {
             TokenKind::TypeFloat => Ok(TypeExpr::Float),
             TokenKind::TypeBool => Ok(TypeExpr::Bool),
             TokenKind::TypeString => Ok(TypeExpr::String),
+            TokenKind::TypeTensor => Ok(TypeExpr::Tensor),
             TokenKind::TypeVoid => Ok(TypeExpr::Void),
             _ => Err(MuninnError::new(
                 "parser",
@@ -509,6 +562,60 @@ impl Parser {
                 .tokens
                 .get(self.current + 1)
                 .is_some_and(|token| matches!(token.kind, TokenKind::Equal))
+    }
+
+    fn starts_statement_in_block(&self) -> bool {
+        matches!(
+            self.peek().kind,
+            TokenKind::Let | TokenKind::Return | TokenKind::While | TokenKind::If | TokenKind::Fn
+        ) || self.is_assignment_statement()
+    }
+
+    fn parse_if_parts(
+        &mut self,
+        allow_expression_branches: bool,
+    ) -> Result<(Expr, Block, Option<Block>), MuninnError> {
+        self.consume_simple(TokenKind::LeftParen, "expected '(' after 'if'")?;
+        let condition = self.parse_expression()?;
+        self.consume_simple(TokenKind::RightParen, "expected ')' after if condition")?;
+        let then_branch = if allow_expression_branches {
+            let start = self.consume_simple(TokenKind::LeftBrace, "expected '{'")?.span;
+            self.parse_block_after_left_brace(start, true)?
+        } else {
+            self.parse_block()?
+        };
+        let else_branch = if self.match_simple(TokenKind::Else) {
+            Some(if allow_expression_branches {
+                let start = self.consume_simple(TokenKind::LeftBrace, "expected '{'")?.span;
+                self.parse_block_after_left_brace(start, true)?
+            } else {
+                self.parse_block()?
+            })
+        } else {
+            None
+        };
+        Ok((condition, then_branch, else_branch))
+    }
+
+    fn parse_if_expression(&mut self, start: crate::span::Span) -> Result<Expr, MuninnError> {
+        let (condition, then_branch, else_branch) = self.parse_if_parts(true)?;
+        let else_branch = else_branch.ok_or_else(|| {
+            MuninnError::new(
+                "parser",
+                "if expression requires an else branch",
+                then_branch.span,
+            )
+        })?;
+        let span = start.merge(else_branch.span);
+        Ok(Expr {
+            id: self.alloc_id(),
+            kind: ExprKind::If {
+                condition: Box::new(condition),
+                then_branch,
+                else_branch,
+            },
+            span,
+        })
     }
 
     fn synchronize(&mut self) {
@@ -646,6 +753,30 @@ while (total < 3) {
             panic!("expected expr stmt");
         };
         assert!(matches!(expr.kind, ExprKind::Call { .. }));
+    }
+
+    #[test]
+    fn parses_if_expression_in_initializer() {
+        let src = "let value: Int = if (true) { 1 } else { 2 };";
+        let tokens = Lexer::new(src).lex().expect("tokens");
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().expect("program");
+        let StmtKind::Let { initializer, .. } = &program.statements[0].kind else {
+            panic!("expected let");
+        };
+        assert!(matches!(initializer.kind, ExprKind::If { .. }));
+    }
+
+    #[test]
+    fn parses_block_expression_value() {
+        let src = "let value: Float = { let base: Float = 1.5; base + 1.0 };";
+        let tokens = Lexer::new(src).lex().expect("tokens");
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().expect("program");
+        let StmtKind::Let { initializer, .. } = &program.statements[0].kind else {
+            panic!("expected let");
+        };
+        assert!(matches!(initializer.kind, ExprKind::Block(_)));
     }
 
     #[test]

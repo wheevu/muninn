@@ -7,6 +7,7 @@ fn all_examples_parse_check_and_run() {
     for (path, expected) in [
         ("examples/perceptron.mun", "3.0"),
         ("examples/dsa_euclid.mun", "6"),
+        ("examples/tensor_pipeline.mun", "32.0"),
     ] {
         let source = fs::read_to_string(path).expect("example source");
         let analysis = analyze_document(&source);

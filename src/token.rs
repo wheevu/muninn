@@ -43,6 +43,7 @@ pub enum TokenKind {
     TypeFloat,
     TypeBool,
     TypeString,
+    TypeTensor,
     TypeVoid,
 
     Eof,

@@ -224,6 +224,7 @@ impl<'a> Lexer<'a> {
             "Float" => TokenKind::TypeFloat,
             "Bool" => TokenKind::TypeBool,
             "String" => TokenKind::TypeString,
+            "Tensor" => TokenKind::TypeTensor,
             "Void" => TokenKind::TypeVoid,
             _ => TokenKind::Identifier(value),
         };

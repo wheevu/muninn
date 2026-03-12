@@ -1,0 +1,16 @@
+let base: Tensor = tensor_fill(2, 2, 1.5);
+let bias: Tensor = tensor_fill(1, 2, 0.5);
+let weights: Tensor = tensor_fill(2, 2, 2.0);
+
+let normalized: Tensor = if (tensor_sum(base) > 0.0) {
+    base + bias
+} else {
+    base
+};
+
+let logits: Tensor = tensor_matmul(normalized, weights);
+let total: Float = tensor_sum(logits);
+
+assert(total == 32.0);
+print(total);
+total;

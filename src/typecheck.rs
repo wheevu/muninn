@@ -1,11 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::ast::{
     BinaryOp, Block, Expr, ExprKind, FunctionDecl, NodeId, Program, Stmt, StmtKind, TypeExpr,
     UnaryOp,
 };
-use crate::builtins::{accepts_argument, builtin_by_name, return_type, BuiltinKind, BUILTINS};
 use crate::error::MuninnError;
+use crate::native::{
+    NativeFunctionKind, NativeSignature, NativeType, format_native_overload, native_by_kind,
+    native_by_name, registered_natives,
+};
 use crate::span::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,9 +17,10 @@ pub enum Ty {
     Float,
     Bool,
     String,
+    Tensor,
     Void,
     Function(Vec<Ty>, Box<Ty>),
-    Builtin(BuiltinKind),
+    NativeFunction(NativeFunctionKind),
     Error,
 }
 
@@ -26,7 +30,7 @@ pub enum SymbolKind {
     Local,
     Parameter,
     Function,
-    Builtin(BuiltinKind),
+    NativeFunction(NativeFunctionKind),
 }
 
 #[derive(Debug, Clone)]
@@ -115,7 +119,7 @@ impl Analyzer {
             current_return: None,
             inside_function: false,
         };
-        analyzer.install_builtins();
+        analyzer.install_natives();
         analyzer
     }
 
@@ -130,17 +134,17 @@ impl Analyzer {
         }
     }
 
-    fn install_builtins(&mut self) {
-        for builtin in BUILTINS {
+    fn install_natives(&mut self) {
+        for native in registered_natives() {
             let symbol_id = self.model.symbols.len();
-            self.scopes[0].insert(builtin.name.to_string(), symbol_id);
+            self.scopes[0].insert(native.name.to_string(), symbol_id);
             self.model.symbols.push(Symbol {
                 id: symbol_id,
-                name: builtin.name.to_string(),
-                kind: SymbolKind::Builtin(builtin.kind),
+                name: native.name.to_string(),
+                kind: SymbolKind::NativeFunction(native.kind),
                 span: Span::default(),
-                detail: builtin.detail.to_string(),
-                ty: Ty::Builtin(builtin.kind),
+                detail: native.detail.to_string(),
+                ty: Ty::NativeFunction(native.kind),
                 mutable: false,
             });
         }
@@ -273,7 +277,10 @@ impl Analyzer {
                         if !symbol.mutable {
                             self.error(*name_span, format!("'{}' is not mutable", name));
                         }
-                        if matches!(symbol.kind, SymbolKind::Function | SymbolKind::Builtin(_)) {
+                        if matches!(
+                            symbol.kind,
+                            SymbolKind::Function | SymbolKind::NativeFunction(_)
+                        ) {
                             self.error(*name_span, format!("cannot assign to '{}'", name));
                         } else if !self.ty_compatible(&symbol.ty, &value_ty) {
                             self.error(
@@ -332,7 +339,7 @@ impl Analyzer {
         self.inside_function = previous_inside_function;
     }
 
-    fn check_block(&mut self, block: &Block) {
+    fn check_block(&mut self, block: &Block) -> Ty {
         self.enter_scope();
         let mut reached_terminal = false;
         for statement in &block.statements {
@@ -345,7 +352,19 @@ impl Analyzer {
                 reached_terminal = true;
             }
         }
+
+        let value_ty = if let Some(value) = &block.value {
+            if reached_terminal {
+                self.error(value.span, "unreachable block value".to_string());
+                Ty::Error
+            } else {
+                self.check_expr(value)
+            }
+        } else {
+            Ty::Void
+        };
         self.exit_scope();
+        value_ty
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Ty {
@@ -368,6 +387,7 @@ impl Analyzer {
                 }
             },
             ExprKind::Grouping(inner) => self.check_expr(inner),
+            ExprKind::Block(block) => self.check_block(block),
             ExprKind::Unary { op, expr: inner } => {
                 let inner_ty = self.check_expr(inner);
                 match op {
@@ -402,6 +422,33 @@ impl Analyzer {
                     .collect::<Vec<_>>();
                 self.check_call(callee, &callee_ty, &arg_types, expr.span)
             }
+            ExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let condition_ty = self.check_expr(condition);
+                if condition_ty != Ty::Bool && condition_ty != Ty::Error {
+                    self.error(condition.span, "if condition must be Bool".to_string());
+                }
+                let then_ty = self.check_block(then_branch);
+                let else_ty = self.check_block(else_branch);
+                if self.ty_compatible(&then_ty, &else_ty) {
+                    then_ty
+                } else if matches!(then_ty, Ty::Error) || matches!(else_ty, Ty::Error) {
+                    Ty::Error
+                } else {
+                    self.error(
+                        expr.span,
+                        format!(
+                            "if expression branches must return the same type, got {} and {}",
+                            display_ty(&then_ty),
+                            display_ty(&else_ty)
+                        ),
+                    );
+                    Ty::Error
+                }
+            }
         };
         self.model.expr_types.insert(expr.id, ty.clone());
         ty
@@ -416,13 +463,15 @@ impl Analyzer {
                     Ty::Int
                 } else if left == &Ty::Float && right == &Ty::Float {
                     Ty::Float
+                } else if self.is_tensor_numeric_pair(left, right) {
+                    Ty::Tensor
                 } else if matches!(left, Ty::Error) || matches!(right, Ty::Error) {
                     Ty::Error
                 } else {
                     self.error(
                         span,
                         format!(
-                            "'+' expects Int/Int, Float/Float, or String/String, got {} and {}",
+                            "'+' expects Int/Int, Float/Float, String/String, Tensor/Tensor, or Tensor/Float, got {} and {}",
                             display_ty(left),
                             display_ty(right)
                         ),
@@ -435,13 +484,15 @@ impl Analyzer {
                     Ty::Int
                 } else if left == &Ty::Float && right == &Ty::Float {
                     Ty::Float
+                } else if self.is_tensor_numeric_pair(left, right) {
+                    Ty::Tensor
                 } else if matches!(left, Ty::Error) || matches!(right, Ty::Error) {
                     Ty::Error
                 } else {
                     self.error(
                         span,
                         format!(
-                            "numeric operator expects matching numeric types, got {} and {}",
+                            "numeric operator expects matching numeric types or Tensor/Float combinations, got {} and {}",
                             display_ty(left),
                             display_ty(right)
                         ),
@@ -450,13 +501,15 @@ impl Analyzer {
                 }
             }
             BinaryOp::Equal | BinaryOp::NotEqual => {
-                if self.ty_compatible(left, right) || self.ty_compatible(right, left) {
+                if self.scalar_equality_compatible(left, right) {
                     Ty::Bool
+                } else if matches!(left, Ty::Error) || matches!(right, Ty::Error) {
+                    Ty::Error
                 } else {
                     self.error(
                         span,
                         format!(
-                            "comparison expects matching types, got {} and {}",
+                            "comparison expects matching scalar or String types, got {} and {}",
                             display_ty(left),
                             display_ty(right)
                         ),
@@ -531,38 +584,12 @@ impl Analyzer {
                 }
                 ret.as_ref().clone()
             }
-            Ty::Builtin(kind) => match kind {
-                BuiltinKind::Print => {
-                    if arg_types.len() != 1 {
-                        self.error(span, "print expects exactly 1 argument".to_string());
-                    } else if !accepts_argument(*kind, &arg_types[0]) {
-                        self.error(
-                            span,
-                            format!(
-                                "print cannot format values of type {}",
-                                display_ty(&arg_types[0])
-                            ),
-                        );
-                    }
-                    return_type(*kind)
-                }
-                BuiltinKind::Assert => {
-                    if arg_types.len() != 1 {
-                        self.error(span, "assert expects exactly 1 argument".to_string());
-                    } else if !accepts_argument(*kind, &arg_types[0]) {
-                        self.error(
-                            span,
-                            format!("assert expects Bool, got {}", display_ty(&arg_types[0])),
-                        );
-                    }
-                    return_type(*kind)
-                }
-            },
+            Ty::NativeFunction(kind) => self.check_native_call(*kind, arg_types, span),
             Ty::Error => Ty::Error,
             other => {
-                let builtin_hint = if let ExprKind::Variable(name) = &callee.kind {
-                    builtin_by_name(name)
-                        .map(|builtin| format!(" (did you mean builtin '{}'? )", builtin.name))
+                let native_hint = if let ExprKind::Variable(name) = &callee.kind {
+                    native_by_name(name)
+                        .map(|native| format!(" (did you mean native function '{}'? )", native.name))
                         .unwrap_or_default()
                 } else {
                     String::new()
@@ -572,12 +599,95 @@ impl Analyzer {
                     format!(
                         "value of type {} is not callable{}",
                         display_ty(other),
-                        builtin_hint
+                        native_hint
                     ),
                 );
                 Ty::Error
             }
         }
+    }
+
+    fn check_native_call(&mut self, kind: NativeFunctionKind, arg_types: &[Ty], span: Span) -> Ty {
+        if arg_types.iter().any(|ty| matches!(ty, Ty::Error)) {
+            return Ty::Error;
+        }
+
+        let native = native_by_kind(kind);
+        if let Some(signature) = native
+            .signatures
+            .iter()
+            .find(|signature| native_signature_matches(signature, arg_types))
+        {
+            return ty_from_native_type(signature.return_type);
+        }
+
+        let matching_arity = native
+            .signatures
+            .iter()
+            .filter(|signature| signature.params.len() == arg_types.len())
+            .collect::<Vec<_>>();
+
+        if matching_arity.is_empty() {
+            let mut counts = native
+                .signatures
+                .iter()
+                .map(|signature| signature.params.len())
+                .collect::<Vec<_>>();
+            counts.sort_unstable();
+            counts.dedup();
+            let expected = counts
+                .iter()
+                .map(|count| count.to_string())
+                .collect::<Vec<_>>()
+                .join(" or ");
+            self.error(
+                span,
+                format!(
+                    "{} expects {} argument(s), got {}",
+                    native.name,
+                    expected,
+                    arg_types.len()
+                ),
+            );
+            return Ty::Error;
+        }
+
+        for (index, actual) in arg_types.iter().enumerate() {
+            let expected = expected_native_types(&matching_arity, index);
+            if !expected.iter().any(|ty| native_type_matches_ty(*ty, actual)) {
+                let expected = expected
+                    .iter()
+                    .map(|ty| native_type_name(*ty).to_string())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                self.error(
+                    span,
+                    format!(
+                        "{} argument {} expects {}, got {}",
+                        native.name,
+                        index,
+                        expected,
+                        display_ty(actual)
+                    ),
+                );
+                return Ty::Error;
+            }
+        }
+
+        self.error(
+            span,
+            format!(
+                "no matching overload for {}",
+                format_native_overload(
+                    native.name,
+                    &arg_types
+                        .iter()
+                        .map(native_type_from_ty)
+                        .collect::<Vec<_>>()
+                )
+            ),
+        );
+        Ty::Error
     }
 
     fn block_guarantees_return(&self, block: &Block) -> bool {
@@ -602,6 +712,25 @@ impl Analyzer {
             }),
             _ => false,
         }
+    }
+
+    fn scalar_equality_compatible(&self, left: &Ty, right: &Ty) -> bool {
+        matches!(
+            (left, right),
+            (Ty::Int, Ty::Int)
+                | (Ty::Float, Ty::Float)
+                | (Ty::Bool, Ty::Bool)
+                | (Ty::String, Ty::String)
+        )
+    }
+
+    fn is_tensor_numeric_pair(&self, left: &Ty, right: &Ty) -> bool {
+        matches!(
+            (left, right),
+            (Ty::Tensor, Ty::Tensor)
+                | (Ty::Tensor, Ty::Float)
+                | (Ty::Float, Ty::Tensor)
+        )
     }
 
     fn ty_compatible(&self, expected: &Ty, actual: &Ty) -> bool {
@@ -700,16 +829,16 @@ pub fn display_ty(ty: &Ty) -> String {
         Ty::Float => "Float".to_string(),
         Ty::Bool => "Bool".to_string(),
         Ty::String => "String".to_string(),
+        Ty::Tensor => "Tensor".to_string(),
         Ty::Void => "Void".to_string(),
         Ty::Function(params, ret) => format!(
             "fn({}) -> {}",
             params.iter().map(display_ty).collect::<Vec<_>>().join(", "),
             display_ty(ret)
         ),
-        Ty::Builtin(kind) => match kind {
-            BuiltinKind::Print => "builtin print".to_string(),
-            BuiltinKind::Assert => "builtin assert".to_string(),
-        },
+        Ty::NativeFunction(kind) => {
+            format!("native fn {}", native_by_kind(*kind).name)
+        }
         Ty::Error => "<error>".to_string(),
     }
 }
@@ -720,7 +849,71 @@ pub fn ty_from_type_expr(ty: TypeExpr) -> Ty {
         TypeExpr::Float => Ty::Float,
         TypeExpr::Bool => Ty::Bool,
         TypeExpr::String => Ty::String,
+        TypeExpr::Tensor => Ty::Tensor,
         TypeExpr::Void => Ty::Void,
+    }
+}
+
+fn ty_from_native_type(ty: NativeType) -> Ty {
+    match ty {
+        NativeType::Int => Ty::Int,
+        NativeType::Float => Ty::Float,
+        NativeType::Bool => Ty::Bool,
+        NativeType::String => Ty::String,
+        NativeType::Tensor => Ty::Tensor,
+        NativeType::Void => Ty::Void,
+    }
+}
+
+fn native_type_from_ty(ty: &Ty) -> NativeType {
+    match ty {
+        Ty::Int => NativeType::Int,
+        Ty::Float => NativeType::Float,
+        Ty::Bool => NativeType::Bool,
+        Ty::String => NativeType::String,
+        Ty::Tensor => NativeType::Tensor,
+        Ty::Void | Ty::Function(_, _) | Ty::NativeFunction(_) | Ty::Error => NativeType::Void,
+    }
+}
+
+fn native_signature_matches(signature: &NativeSignature, arg_types: &[Ty]) -> bool {
+    signature.params.len() == arg_types.len()
+        && signature
+            .params
+            .iter()
+            .zip(arg_types.iter())
+            .all(|(expected, actual)| native_type_matches_ty(*expected, actual))
+}
+
+fn native_type_matches_ty(expected: NativeType, actual: &Ty) -> bool {
+    match expected {
+        NativeType::Int => actual == &Ty::Int,
+        NativeType::Float => actual == &Ty::Float,
+        NativeType::Bool => actual == &Ty::Bool,
+        NativeType::String => actual == &Ty::String,
+        NativeType::Tensor => actual == &Ty::Tensor,
+        NativeType::Void => actual == &Ty::Void,
+    }
+}
+
+fn expected_native_types(signatures: &[&NativeSignature], index: usize) -> Vec<NativeType> {
+    let mut types = BTreeSet::new();
+    for signature in signatures {
+        if let Some(ty) = signature.params.get(index) {
+            types.insert(*ty);
+        }
+    }
+    types.into_iter().collect()
+}
+
+fn native_type_name(ty: NativeType) -> &'static str {
+    match ty {
+        NativeType::Int => "Int",
+        NativeType::Float => "Float",
+        NativeType::Bool => "Bool",
+        NativeType::String => "String",
+        NativeType::Void => "Void",
+        NativeType::Tensor => "Tensor",
     }
 }
 
@@ -728,7 +921,7 @@ pub fn ty_from_type_expr(ty: TypeExpr) -> Ty {
 mod tests {
     use crate::frontend::parse_document;
 
-    use super::{analyze_program, Ty};
+    use super::{Ty, analyze_program};
 
     #[test]
     fn records_expression_types_by_node_id() {
@@ -755,19 +948,20 @@ mod tests {
         )
         .expect("program");
         let model = analyze_program(&program);
-        assert!(model.diagnostics.iter().any(|error| error
-            .message
-            .contains("may fall through without returning Int")));
+        assert!(model
+            .diagnostics
+            .iter()
+            .any(|error| error.message.contains("may fall through without returning Int")));
     }
 
     #[test]
-    fn validates_assert_builtin_argument_type() {
+    fn validates_assert_native_argument_type() {
         let program = parse_document("assert(1);").expect("program");
         let model = analyze_program(&program);
         assert!(model
             .diagnostics
             .iter()
-            .any(|error| error.message.contains("assert expects Bool")));
+            .any(|error| error.message.contains("assert argument 0 expects Bool")));
     }
 
     #[test]
@@ -779,5 +973,15 @@ mod tests {
             .diagnostics
             .iter()
             .any(|error| error.message == "unreachable statement"));
+    }
+
+    #[test]
+    fn checks_if_expression_branch_types() {
+        let program = parse_document("let x = if (true) { 1 } else { 2.0 };").expect("program");
+        let model = analyze_program(&program);
+        assert!(model
+            .diagnostics
+            .iter()
+            .any(|error| error.message.contains("if expression branches must return the same type")));
     }
 }

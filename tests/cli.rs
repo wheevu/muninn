@@ -14,6 +14,16 @@ fn write_temp_source(contents: &str) -> PathBuf {
     path
 }
 
+fn temp_bytecode_path() -> PathBuf {
+    let mut path = std::env::temp_dir();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    path.push(format!("muninn-cli-{stamp}.mubc"));
+    path
+}
+
 #[test]
 fn check_command_reports_ok_for_valid_program() {
     let source = r#"
@@ -54,6 +64,60 @@ fn unknown_command_fails_with_helpful_message() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unknown command 'lint'."));
     assert!(stderr.contains("Usage:"));
+}
+
+#[test]
+fn build_command_emits_mubc_artifact() {
+    let source = r#"
+let value: Int = 1 + 2;
+value;
+"#;
+    let source_path = write_temp_source(source);
+    let output_path = temp_bytecode_path();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_muninn"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&output_path)
+        .output()
+        .expect("run muninn build");
+
+    let _ = fs::remove_file(&source_path);
+    let _ = fs::remove_file(&output_path);
+
+    assert!(output.status.success());
+}
+
+#[test]
+fn run_bc_command_executes_compiled_artifact() {
+    let source = r#"
+let value: Int = 4;
+value + 3;
+"#;
+    let source_path = write_temp_source(source);
+    let output_path = temp_bytecode_path();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_muninn"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&output_path)
+        .output()
+        .expect("run muninn build");
+    assert!(build.status.success());
+
+    let run = Command::new(env!("CARGO_BIN_EXE_muninn"))
+        .arg("run-bc")
+        .arg(&output_path)
+        .output()
+        .expect("run muninn run-bc");
+
+    let _ = fs::remove_file(&source_path);
+    let _ = fs::remove_file(&output_path);
+
+    assert!(run.status.success());
+    assert!(String::from_utf8_lossy(&run.stdout).contains("=> 7"));
 }
 
 #[test]

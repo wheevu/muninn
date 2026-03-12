@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_assert_resolves_without_diagnostics() {
+    fn native_assert_resolves_without_diagnostics() {
         let source = "assert(true);\n";
         let analysis = analyze_document(source);
         assert!(analysis.diagnostics.is_empty());

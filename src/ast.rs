@@ -66,6 +66,7 @@ pub struct Param {
 pub struct Block {
     pub id: NodeId,
     pub statements: Vec<Stmt>,
+    pub value: Option<Box<Expr>>,
     pub span: Span,
 }
 
@@ -84,6 +85,7 @@ pub enum ExprKind {
     String(String),
     Variable(String),
     Grouping(Box<Expr>),
+    Block(Block),
     Unary {
         op: UnaryOp,
         expr: Box<Expr>,
@@ -96,6 +98,11 @@ pub enum ExprKind {
     Call {
         callee: Box<Expr>,
         args: Vec<Expr>,
+    },
+    If {
+        condition: Box<Expr>,
+        then_branch: Block,
+        else_branch: Block,
     },
 }
 
@@ -127,5 +134,6 @@ pub enum TypeExpr {
     Float,
     Bool,
     String,
+    Tensor,
     Void,
 }

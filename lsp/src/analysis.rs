@@ -6,7 +6,7 @@ pub fn markdown_for_symbol(symbol: &Symbol) -> String {
         SymbolKind::Local => "local",
         SymbolKind::Parameter => "parameter",
         SymbolKind::Function => "function",
-        SymbolKind::Builtin(_) => "builtin",
+        SymbolKind::NativeFunction(_) => "native function",
     };
 
     format!(
@@ -19,7 +19,7 @@ pub fn markdown_for_symbol(symbol: &Symbol) -> String {
 
 pub fn detail_for_symbol(symbol: &Symbol) -> String {
     match symbol.kind {
-        SymbolKind::Builtin(_) => symbol.detail.clone(),
+        SymbolKind::NativeFunction(_) => symbol.detail.clone(),
         _ => format!("{} ({})", symbol.detail, display_ty(&symbol.ty)),
     }
 }
