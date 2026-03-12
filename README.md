@@ -104,10 +104,3 @@ Run benchmarks:
 ```bash
 cargo bench --bench runtime
 ```
-
-## Runtime Contract
-
-- `.mubc` is a versioned internal bytecode format. Unsupported versions are rejected at load time.
-- The zero-allocation guarantee applies to the interpreter core after capacity reservation: scalar math, branching, local/global access, and ordinary function calls.
-- Tensor-producing natives, string concatenation, and diagnostic formatting remain outside the no-allocation guarantee.
-- Hot reload preserves globals and reloads safely when the VM is back at the root frame; it does not migrate arbitrary nested call stacks.
