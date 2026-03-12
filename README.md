@@ -1,4 +1,10 @@
 # Muninn 🐦‍⬛
+<p>
+  <img src="https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white">
+  <img src="https://img.shields.io/badge/Language-Statically%20Typed-111111">
+  <img src="https://img.shields.io/badge/Type-Scripting%20Language-111111">
+  <img src="https://img.shields.io/badge/License-MIT-111111">
+</p>
 
 Muninn is a small statically typed scripting language implemented in Rust.
 
