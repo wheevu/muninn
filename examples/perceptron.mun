@@ -1,7 +1,8 @@
-fn score(raw: Float, weight: Float, bias: Float) -> Float {
+fn weighted_score(raw: Float, weight: Float, bias: Float) -> Float {
     return raw * weight + bias;
 }
 
-let reading: Float = score(2.5, 0.8, 1.0);
+let reading: Float = weighted_score(2.5, 0.8, 1.0);
+assert(reading > 2.0);
 print(reading);
 reading;

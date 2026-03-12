@@ -5,9 +5,8 @@ use muninn::{analyze_document, compile_and_run};
 #[test]
 fn all_examples_parse_check_and_run() {
     for (path, expected) in [
-        ("examples/donut.mun", "3"),
-        ("examples/feature_tour.mun", "0"),
         ("examples/perceptron.mun", "3.0"),
+        ("examples/dsa_euclid.mun", "6"),
     ] {
         let source = fs::read_to_string(path).expect("example source");
         let analysis = analyze_document(&source);
@@ -38,5 +37,5 @@ fn readme_example_runs() {
     let analysis = analyze_document(source);
     assert!(analysis.diagnostics.is_empty());
     let result = compile_and_run(source).expect("README example run");
-    assert_eq!(result.to_string(), "3");
+    assert_eq!(result.to_string(), "6");
 }

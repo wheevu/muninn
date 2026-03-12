@@ -17,6 +17,7 @@ This extension provides thin VS Code integration for Muninn (`.mun`) files.
 - `muninn-lsp` available either:
   - via `muninn.serverPath`
   - at `target/debug/muninn-lsp` in the opened workspace
+  - via `cargo run --quiet -p muninn-lsp` when the repo is open
   - on your `PATH`
 
 ## Development

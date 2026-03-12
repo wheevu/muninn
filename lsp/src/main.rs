@@ -234,4 +234,19 @@ mod tests {
             .expect("definition");
         assert_eq!(symbol.name, "value");
     }
+
+    #[test]
+    fn builtin_assert_resolves_without_diagnostics() {
+        let source = "assert(true);\n";
+        let analysis = analyze_document(source);
+        assert!(analysis.diagnostics.is_empty());
+        let doc = DocumentState::new(3, source.to_string(), analysis);
+
+        let use_offset = source.find("assert").expect("assert use");
+        let symbol = doc
+            .analysis
+            .definition_at_offset(use_offset)
+            .expect("assert definition");
+        assert_eq!(symbol.name, "assert");
+    }
 }

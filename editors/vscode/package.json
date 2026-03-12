@@ -43,7 +43,7 @@
         "muninn.serverPath": {
           "type": "string",
           "default": "",
-          "description": "Optional path to the muninn-lsp binary. If empty, the extension tries target/debug in the workspace, then PATH."
+          "description": "Optional path to the muninn-lsp binary. If empty, the extension tries target/debug, then cargo run in the workspace, then PATH."
         }
       }
     }

@@ -23,17 +23,37 @@ Muninn is a small statically typed scripting language implemented in Rust.
 ## Example
 
 ```muninn
-fn add(a: Int, b: Int) -> Int {
-    return a + b;
+fn abs_int(value: Int) -> Int {
+    if (value < 0) {
+        return -value;
+    }
+    return value;
 }
 
-let mut total: Int = 0;
-while (total < 3) {
-    total = add(total, 1);
+fn gcd(a: Int, b: Int) -> Int {
+    let mut x: Int = abs_int(a);
+    let mut y: Int = abs_int(b);
+    while (y != 0) {
+        let quotient: Int = x / y;
+        let remainder: Int = x - quotient * y;
+        x = y;
+        y = remainder;
+    }
+    return x;
 }
 
-print(total);
-total;
+fn lcm(a: Int, b: Int) -> Int {
+    let divisor: Int = gcd(a, b);
+    return (a / divisor) * b;
+}
+
+let divisor: Int = gcd(84, 30);
+let multiple: Int = lcm(84, 30);
+assert(divisor == 6);
+assert(multiple == 420);
+print(divisor);
+print(multiple);
+divisor;
 ```
 
 ## Commands
@@ -47,13 +67,13 @@ cargo run
 Run a file:
 
 ```bash
-cargo run -- run examples/feature_tour.mun
+cargo run -- run examples/dsa_euclid.mun
 ```
 
 Type-check a file:
 
 ```bash
-cargo run -- check examples/feature_tour.mun
+cargo run -- check examples/dsa_euclid.mun
 ```
 
 Run tests:

@@ -11,14 +11,18 @@ import {
 let client: LanguageClient | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const command = resolveServerPath();
+  const server = resolveServerCommand();
   const serverOptions: ServerOptions = {
     run: {
-      command,
+      command: server.command,
+      args: server.args,
+      options: server.cwd ? { cwd: server.cwd } : undefined,
       transport: TransportKind.stdio,
     },
     debug: {
-      command,
+      command: server.command,
+      args: server.args,
+      options: server.cwd ? { cwd: server.cwd } : undefined,
       transport: TransportKind.stdio,
     },
   };
@@ -51,13 +55,13 @@ export async function deactivate(): Promise<void> {
   client = undefined;
 }
 
-function resolveServerPath(): string {
+function resolveServerCommand(): { command: string; args: string[]; cwd?: string } {
   const configured = vscode.workspace
     .getConfiguration("muninn")
     .get<string>("serverPath", "")
     .trim();
   if (configured.length > 0) {
-    return configured;
+    return { command: configured, args: [] };
   }
 
   const executable = process.platform === "win32" ? "muninn-lsp.exe" : "muninn-lsp";
@@ -65,9 +69,19 @@ function resolveServerPath(): string {
   if (workspaceRoot) {
     const localBuild = path.join(workspaceRoot, "target", "debug", executable);
     if (fs.existsSync(localBuild)) {
-      return localBuild;
+      return { command: localBuild, args: [] };
+    }
+
+    const rootCargo = path.join(workspaceRoot, "Cargo.toml");
+    const lspCargo = path.join(workspaceRoot, "lsp", "Cargo.toml");
+    if (fs.existsSync(rootCargo) && fs.existsSync(lspCargo)) {
+      return {
+        command: "cargo",
+        args: ["run", "--quiet", "-p", "muninn-lsp"],
+        cwd: workspaceRoot,
+      };
     }
   }
 
-  return executable;
+  return { command: executable, args: [] };
 }

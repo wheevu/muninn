@@ -1,0 +1,39 @@
+
+
+fn abs_int(value: Int) -> Int {
+    if (value < 0) {
+        return -value;
+    } else {
+        return value;
+    }
+}
+
+fn gcd(a: Int, b: Int) -> Int {
+    let mut x: Int = abs_int(a);
+    let mut y: Int = abs_int(b);
+    while (y != 0) {
+        let quotient: Int = x / y;
+        let remainder: Int = x - quotient * y;
+        x = y;
+        y = remainder;
+    }
+    return x;
+}
+
+fn lcm(a: Int, b: Int) -> Int {
+    let divisor: Int = gcd(a, b);
+    return (a / divisor) * b;
+}
+
+let left: Int = 84;
+let right: Int = 30;
+let divisor: Int = gcd(left, right);
+let multiple: Int = lcm(left, right);
+
+assert(divisor == 6);
+assert(multiple == 420);
+print(divisor);
+print(multiple);
+divisor;
+
+
