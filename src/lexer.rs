@@ -139,7 +139,10 @@ impl<'a> Lexer<'a> {
         while let Some(ch) = self.peek() {
             if ch == '"' {
                 self.advance();
-                return Some(Token::new(TokenKind::StringLiteral(value), self.make_span()));
+                return Some(Token::new(
+                    TokenKind::StringLiteral(value),
+                    self.make_span(),
+                ));
             }
 
             if ch == '\\' {
@@ -181,11 +184,23 @@ impl<'a> Lexer<'a> {
             while self.peek().is_some_and(|ch| ch.is_ascii_digit()) {
                 literal.push(self.advance()?);
             }
-            let value = literal.parse::<f64>().ok()?;
+            let value = match literal.parse::<f64>() {
+                Ok(value) => value,
+                Err(_) => {
+                    self.error(format!("invalid float literal '{}'", literal));
+                    return None;
+                }
+            };
             return Some(Token::new(TokenKind::FloatLiteral(value), self.make_span()));
         }
 
-        let value = literal.parse::<i64>().ok()?;
+        let value = match literal.parse::<i64>() {
+            Ok(value) => value,
+            Err(_) => {
+                self.error(format!("invalid integer literal '{}'", literal));
+                return None;
+            }
+        };
         Some(Token::new(TokenKind::IntLiteral(value), self.make_span()))
     }
 
@@ -315,8 +330,12 @@ mod tests {
             .lex()
             .expect("tokens");
         assert!(matches!(tokens[0].kind, TokenKind::Fn));
-        assert!(tokens.iter().any(|token| matches!(token.kind, TokenKind::TypeVoid)));
-        assert!(tokens.iter().any(|token| matches!(token.kind, TokenKind::TypeInt)));
+        assert!(tokens
+            .iter()
+            .any(|token| matches!(token.kind, TokenKind::TypeVoid)));
+        assert!(tokens
+            .iter()
+            .any(|token| matches!(token.kind, TokenKind::TypeInt)));
     }
 
     #[test]
@@ -329,5 +348,15 @@ mod tests {
             .find(|token| matches!(token.kind, TokenKind::StringLiteral(_)))
             .expect("string token");
         assert!(string.span.end_offset > string.span.offset);
+    }
+
+    #[test]
+    fn reports_invalid_integer_literal() {
+        let errors = Lexer::new("let x: Int = 9223372036854775808;")
+            .lex()
+            .expect_err("lexer error");
+        assert!(errors
+            .iter()
+            .any(|error| error.message.contains("invalid integer literal")));
     }
 }

@@ -51,8 +51,9 @@ fn unknown_command_fails_with_helpful_message() {
     let _ = fs::remove_file(&path);
 
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr)
-        .contains("unknown command 'lint'. use 'run <file>' or 'check <file>'"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown command 'lint'."));
+    assert!(stderr.contains("Usage:"));
 }
 
 #[test]
@@ -72,4 +73,30 @@ fn run_command_exits_non_zero_on_type_errors() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("typecheck error"));
     assert!(stderr.contains("expected initializer of type Int, got Bool"));
+}
+
+#[test]
+fn help_flag_prints_usage() {
+    let output = Command::new(env!("CARGO_BIN_EXE_muninn"))
+        .arg("--help")
+        .output()
+        .expect("run muninn --help");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Usage:"));
+    assert!(stdout.contains("muninn run <file>"));
+}
+
+#[test]
+fn check_command_without_path_fails() {
+    let output = Command::new(env!("CARGO_BIN_EXE_muninn"))
+        .arg("check")
+        .output()
+        .expect("run muninn check");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("missing source file for command 'check'"));
+    assert!(stderr.contains("Usage:"));
 }

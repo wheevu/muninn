@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::error::MuninnError;
 use crate::span::Span;
 
 #[derive(Debug, Clone)]
@@ -154,6 +155,242 @@ impl OpCode {
     }
 }
 
+pub fn validate_module(module: &BytecodeModule) -> Result<(), Vec<MuninnError>> {
+    let mut errors = Vec::new();
+
+    if module.functions.is_empty() {
+        errors.push(MuninnError::new(
+            "compiler",
+            "bytecode module has no functions",
+            Span::default(),
+        ));
+        return Err(errors);
+    }
+
+    if module.entry_function >= module.functions.len() {
+        errors.push(MuninnError::new(
+            "compiler",
+            format!(
+                "entry function {} is out of bounds for {} functions",
+                module.entry_function,
+                module.functions.len()
+            ),
+            Span::default(),
+        ));
+    }
+
+    for (function_id, function) in module.functions.iter().enumerate() {
+        if function.local_count < function.arity {
+            errors.push(MuninnError::new(
+                "compiler",
+                format!(
+                    "function '{}' local_count {} is smaller than arity {}",
+                    function.name, function.local_count, function.arity
+                ),
+                Span::default(),
+            ));
+        }
+
+        if function.chunk.code.len() != function.chunk.spans.len() {
+            errors.push(MuninnError::new(
+                "compiler",
+                format!(
+                    "function '{}' has {} op bytes but {} span entries",
+                    function.name,
+                    function.chunk.code.len(),
+                    function.chunk.spans.len()
+                ),
+                Span::default(),
+            ));
+            continue;
+        }
+
+        for constant in &function.chunk.constants {
+            if let Constant::Function(target) = constant
+                && *target >= module.functions.len()
+            {
+                errors.push(MuninnError::new(
+                    "compiler",
+                    format!(
+                        "function '{}' references missing function id {}",
+                        function.name, target
+                    ),
+                    Span::default(),
+                ));
+            }
+        }
+
+        let mut ip = 0usize;
+        while ip < function.chunk.code.len() {
+            let span = function.chunk.span_at(ip);
+            let byte = function.chunk.code[ip];
+            let Some(op) = OpCode::from_byte(byte) else {
+                errors.push(MuninnError::new(
+                    "compiler",
+                    format!("invalid opcode {} in function '{}'", byte, function.name),
+                    span,
+                ));
+                break;
+            };
+
+            let width = instruction_width(op);
+            if ip + width > function.chunk.code.len() {
+                errors.push(MuninnError::new(
+                    "compiler",
+                    format!(
+                        "truncated {:?} instruction at byte {} in function '{}'",
+                        op, ip, function.name
+                    ),
+                    span,
+                ));
+                break;
+            }
+
+            match op {
+                OpCode::Constant => {
+                    let index = read_u16(&function.chunk.code, ip + 1) as usize;
+                    if index >= function.chunk.constants.len() {
+                        errors.push(MuninnError::new(
+                            "compiler",
+                            format!(
+                                "constant index {} out of bounds in function '{}'",
+                                index, function.name
+                            ),
+                            span,
+                        ));
+                    }
+                }
+                OpCode::DefineGlobal | OpCode::GetGlobal | OpCode::SetGlobal => {
+                    let index = read_u16(&function.chunk.code, ip + 1) as usize;
+                    match function.chunk.constants.get(index) {
+                        Some(Constant::String(_)) => {}
+                        Some(_) => errors.push(MuninnError::new(
+                            "compiler",
+                            format!(
+                                "global name constant at index {} is not a string in function '{}'",
+                                index, function.name
+                            ),
+                            span,
+                        )),
+                        None => errors.push(MuninnError::new(
+                            "compiler",
+                            format!(
+                                "global name constant index {} out of bounds in function '{}'",
+                                index, function.name
+                            ),
+                            span,
+                        )),
+                    }
+                }
+                OpCode::GetLocal | OpCode::SetLocal => {
+                    let slot = read_u16(&function.chunk.code, ip + 1) as usize;
+                    if slot >= function.local_count {
+                        errors.push(MuninnError::new(
+                            "compiler",
+                            format!(
+                                "local slot {} out of bounds (local_count {}) in function '{}'",
+                                slot, function.local_count, function.name
+                            ),
+                            span,
+                        ));
+                    }
+                }
+                OpCode::Jump | OpCode::JumpIfFalse => {
+                    let jump = read_u16(&function.chunk.code, ip + 1) as usize;
+                    let target = ip + width + jump;
+                    if target > function.chunk.code.len() {
+                        errors.push(MuninnError::new(
+                            "compiler",
+                            format!(
+                                "forward jump target {} out of bounds in function '{}'",
+                                target, function.name
+                            ),
+                            span,
+                        ));
+                    }
+                }
+                OpCode::Loop => {
+                    let jump = read_u16(&function.chunk.code, ip + 1) as usize;
+                    if jump > ip + width {
+                        errors.push(MuninnError::new(
+                            "compiler",
+                            format!(
+                                "backward loop jump {} underflows instruction pointer in function '{}'",
+                                jump, function.name
+                            ),
+                            span,
+                        ));
+                    }
+                }
+                OpCode::Call
+                | OpCode::Nil
+                | OpCode::True
+                | OpCode::False
+                | OpCode::Pop
+                | OpCode::Add
+                | OpCode::Subtract
+                | OpCode::Multiply
+                | OpCode::Divide
+                | OpCode::Negate
+                | OpCode::Not
+                | OpCode::Equal
+                | OpCode::Greater
+                | OpCode::Less
+                | OpCode::Return => {}
+            }
+
+            ip += width;
+        }
+
+        if function_id == module.entry_function && function.chunk.code.is_empty() {
+            errors.push(MuninnError::new(
+                "compiler",
+                "entry function has empty bytecode",
+                Span::default(),
+            ));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+fn instruction_width(op: OpCode) -> usize {
+    match op {
+        OpCode::Constant
+        | OpCode::GetLocal
+        | OpCode::SetLocal
+        | OpCode::DefineGlobal
+        | OpCode::GetGlobal
+        | OpCode::SetGlobal
+        | OpCode::JumpIfFalse
+        | OpCode::Jump
+        | OpCode::Loop => 3,
+        OpCode::Call => 2,
+        OpCode::Nil
+        | OpCode::True
+        | OpCode::False
+        | OpCode::Pop
+        | OpCode::Add
+        | OpCode::Subtract
+        | OpCode::Multiply
+        | OpCode::Divide
+        | OpCode::Negate
+        | OpCode::Not
+        | OpCode::Equal
+        | OpCode::Greater
+        | OpCode::Less
+        | OpCode::Return => 1,
+    }
+}
+
+fn read_u16(code: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([code[at], code[at + 1]])
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ConstantKey {
     Int(i64),
@@ -179,7 +416,9 @@ impl ConstantKey {
 
 #[cfg(test)]
 mod tests {
-    use super::{Chunk, Constant};
+    use crate::span::Span;
+
+    use super::{BytecodeModule, Chunk, Constant, FunctionBytecode, OpCode, validate_module};
 
     #[test]
     fn deduplicates_identical_constants() {
@@ -192,5 +431,29 @@ mod tests {
             .expect("second constant");
         assert_eq!(first, second);
         assert_eq!(chunk.constants.len(), 1);
+    }
+
+    #[test]
+    fn validator_rejects_local_slot_overflow() {
+        let mut chunk = Chunk::new();
+        chunk.write_op(OpCode::GetLocal, Span::default());
+        chunk.write_u16(9, Span::default());
+        chunk.write_op(OpCode::Return, Span::default());
+
+        let module = BytecodeModule {
+            functions: vec![FunctionBytecode {
+                name: "bad".to_string(),
+                arity: 0,
+                local_count: 1,
+                expects_return_value: false,
+                chunk,
+            }],
+            entry_function: 0,
+        };
+
+        let errors = validate_module(&module).expect_err("validator errors");
+        assert!(errors
+            .iter()
+            .any(|error| error.message.contains("local slot 9 out of bounds")));
     }
 }

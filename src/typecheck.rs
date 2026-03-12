@@ -4,7 +4,7 @@ use crate::ast::{
     BinaryOp, Block, Expr, ExprKind, FunctionDecl, NodeId, Program, Stmt, StmtKind, TypeExpr,
     UnaryOp,
 };
-use crate::builtins::{BUILTINS, BuiltinKind, accepts_argument, builtin_by_name, return_type};
+use crate::builtins::{accepts_argument, builtin_by_name, return_type, BuiltinKind, BUILTINS};
 use crate::error::MuninnError;
 use crate::span::Span;
 
@@ -214,7 +214,10 @@ impl Analyzer {
             }
             StmtKind::Return(value) => {
                 if !self.inside_function {
-                    self.error(stmt.span, "return can only appear inside a function".to_string());
+                    self.error(
+                        stmt.span,
+                        "return can only appear inside a function".to_string(),
+                    );
                     return;
                 }
                 let actual = value
@@ -331,8 +334,16 @@ impl Analyzer {
 
     fn check_block(&mut self, block: &Block) {
         self.enter_scope();
+        let mut reached_terminal = false;
         for statement in &block.statements {
+            if reached_terminal {
+                self.error(statement.span, "unreachable statement".to_string());
+                continue;
+            }
             self.check_stmt(statement, false);
+            if self.stmt_guarantees_return(statement) {
+                reached_terminal = true;
+            }
         }
         self.exit_scope();
     }
@@ -385,7 +396,10 @@ impl Analyzer {
             }
             ExprKind::Call { callee, args } => {
                 let callee_ty = self.check_expr(callee);
-                let arg_types = args.iter().map(|arg| self.check_expr(arg)).collect::<Vec<_>>();
+                let arg_types = args
+                    .iter()
+                    .map(|arg| self.check_expr(arg))
+                    .collect::<Vec<_>>();
                 self.check_call(callee, &callee_ty, &arg_types, expr.span)
             }
         };
@@ -567,10 +581,12 @@ impl Analyzer {
     }
 
     fn block_guarantees_return(&self, block: &Block) -> bool {
-        block
-            .statements
-            .iter()
-            .any(|statement| self.stmt_guarantees_return(statement))
+        for statement in &block.statements {
+            if self.stmt_guarantees_return(statement) {
+                return true;
+            }
+        }
+        false
     }
 
     fn stmt_guarantees_return(&self, stmt: &Stmt) -> bool {
@@ -580,12 +596,10 @@ impl Analyzer {
                 then_branch,
                 else_branch,
                 ..
-            } => else_branch
-                .as_ref()
-                .is_some_and(|else_branch| {
-                    self.block_guarantees_return(then_branch)
-                        && self.block_guarantees_return(else_branch)
-                }),
+            } => else_branch.as_ref().is_some_and(|else_branch| {
+                self.block_guarantees_return(then_branch)
+                    && self.block_guarantees_return(else_branch)
+            }),
             _ => false,
         }
     }
@@ -613,7 +627,11 @@ impl Analyzer {
         ty: Ty,
         mutable: bool,
     ) {
-        if self.scopes.last().is_some_and(|scope| scope.contains_key(&name)) {
+        if self
+            .scopes
+            .last()
+            .is_some_and(|scope| scope.contains_key(&name))
+        {
             self.error(span, format!("'{}' is already defined in this scope", name));
             return;
         }
@@ -659,7 +677,13 @@ fn format_function_signature(function: &FunctionDecl) -> String {
     let params = function
         .params
         .iter()
-        .map(|param| format!("{}: {}", param.name, display_ty(&ty_from_type_expr(param.ty))))
+        .map(|param| {
+            format!(
+                "{}: {}",
+                param.name,
+                display_ty(&ty_from_type_expr(param.ty))
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ");
     format!(
@@ -704,7 +728,7 @@ pub fn ty_from_type_expr(ty: TypeExpr) -> Ty {
 mod tests {
     use crate::frontend::parse_document;
 
-    use super::{Ty, analyze_program};
+    use super::{analyze_program, Ty};
 
     #[test]
     fn records_expression_types_by_node_id() {
@@ -731,10 +755,9 @@ mod tests {
         )
         .expect("program");
         let model = analyze_program(&program);
-        assert!(model
-            .diagnostics
-            .iter()
-            .any(|error| error.message.contains("may fall through without returning Int")));
+        assert!(model.diagnostics.iter().any(|error| error
+            .message
+            .contains("may fall through without returning Int")));
     }
 
     #[test]
@@ -745,5 +768,16 @@ mod tests {
             .diagnostics
             .iter()
             .any(|error| error.message.contains("assert expects Bool")));
+    }
+
+    #[test]
+    fn flags_unreachable_statement_after_return() {
+        let program =
+            parse_document("fn main() -> Int { return 1; let x: Int = 2; }").expect("program");
+        let model = analyze_program(&program);
+        assert!(model
+            .diagnostics
+            .iter()
+            .any(|error| error.message == "unreachable statement"));
     }
 }

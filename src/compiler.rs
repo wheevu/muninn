@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use crate::ast::{
     BinaryOp, Expr, ExprKind, FunctionDecl, Program, Stmt, StmtKind, TypeExpr, UnaryOp,
 };
-use crate::bytecode::{BytecodeModule, Chunk, Constant, FunctionBytecode, OpCode};
+use crate::bytecode::{
+    BytecodeModule, Chunk, Constant, FunctionBytecode, OpCode, validate_module,
+};
 use crate::error::MuninnError;
 use crate::span::Span;
 
@@ -28,7 +30,11 @@ impl ModuleCompiler {
         }
     }
 
-    fn finish(self) -> Result<BytecodeModule, Vec<MuninnError>> {
+    fn finish(mut self) -> Result<BytecodeModule, Vec<MuninnError>> {
+        if self.errors.is_empty() && let Err(mut validation_errors) = validate_module(&self.module) {
+            self.errors.append(&mut validation_errors);
+        }
+
         if self.errors.is_empty() {
             Ok(self.module)
         } else {
@@ -44,7 +50,7 @@ impl ModuleCompiler {
             }
         }
 
-        let mut entry = FunctionCompiler::new("<entry>".to_string(), 0, false);
+        let mut entry = FunctionCompiler::new("<entry>".to_string(), 0, false, true);
         for statement in &program.statements {
             if let StmtKind::Function(function) = &statement.kind {
                 let Some(function_id) = self.function_ids.get(&function.name).copied() else {
@@ -85,6 +91,7 @@ impl ModuleCompiler {
             function.name.clone(),
             function.params.len(),
             expects_return_value,
+            false,
         );
         for param in &function.params {
             compiler.define_parameter(param.name.clone());
@@ -110,7 +117,7 @@ impl ModuleCompiler {
                 ..
             } => {
                 self.compile_expr(compiler, initializer);
-                if compiler.scope_depth == 0 {
+                if compiler.is_entry && compiler.scope_depth == 0 {
                     if let Err(error) = compiler.emit_named_op(OpCode::DefineGlobal, name, stmt.span) {
                         self.errors.push(error);
                     }
@@ -290,6 +297,7 @@ struct FunctionCompiler {
     name: String,
     arity: usize,
     expects_return_value: bool,
+    is_entry: bool,
     chunk: Chunk,
     locals: Vec<Local>,
     next_slot: usize,
@@ -305,11 +313,12 @@ struct Local {
 }
 
 impl FunctionCompiler {
-    fn new(name: String, arity: usize, expects_return_value: bool) -> Self {
+    fn new(name: String, arity: usize, expects_return_value: bool, is_entry: bool) -> Self {
         Self {
             name,
             arity,
             expects_return_value,
+            is_entry,
             chunk: Chunk::new(),
             locals: Vec::new(),
             next_slot: 0,

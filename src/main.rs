@@ -16,18 +16,45 @@ print("done");
 print(total);
 "#;
 
+const USAGE: &str =
+    "Usage:\n  muninn run <file>\n  muninn check <file>\n  muninn <file>\n  muninn --help";
+
 fn main() {
     let mut args = env::args().skip(1).collect::<Vec<_>>();
+    if matches!(args.first().map(String::as_str), Some("--help" | "-h")) {
+        println!("{}", USAGE);
+        return;
+    }
+
     let (command, source) = match args.len() {
         0 => ("run".to_string(), DEMO_PROGRAM.to_string()),
         1 => {
-            let path = args.remove(0);
-            ("run".to_string(), read_source(&path))
+            let arg = args.remove(0);
+            match arg.as_str() {
+                "run" | "check" => {
+                    eprintln!("missing source file for command '{}'", arg);
+                    eprintln!("{}", USAGE);
+                    std::process::exit(1);
+                }
+                _ => ("run".to_string(), read_source(&arg)),
+            }
         }
-        _ => {
+        2 => {
             let command = args.remove(0);
             let path = args.remove(0);
-            (command, read_source(&path))
+            match command.as_str() {
+                "run" | "check" => (command, read_source(&path)),
+                _ => {
+                    eprintln!("unknown command '{}'.", command);
+                    eprintln!("{}", USAGE);
+                    std::process::exit(1);
+                }
+            }
+        }
+        _ => {
+            eprintln!("too many arguments");
+            eprintln!("{}", USAGE);
+            std::process::exit(1);
         }
     };
 
@@ -35,7 +62,8 @@ fn main() {
         "run" => run_source(&source),
         "check" => check_source(&source),
         other => {
-            eprintln!("unknown command '{other}'. use 'run <file>' or 'check <file>'");
+            eprintln!("unknown command '{}'.", other);
+            eprintln!("{}", USAGE);
             std::process::exit(1);
         }
     }

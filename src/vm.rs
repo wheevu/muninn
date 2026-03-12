@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 
+use crate::builtins::{BuiltinKind, BUILTINS};
 use crate::bytecode::{BytecodeModule, Chunk, Constant, OpCode};
-use crate::builtins::{BuiltinKind, builtin_by_name};
 use crate::span::Span;
 
 pub type VmResult<T> = Result<T, VmError>;
@@ -105,14 +105,12 @@ impl Vm {
     }
 
     fn install_builtins(&mut self) {
-        for name in ["print", "assert"] {
-            if let Some(spec) = builtin_by_name(name) {
-                let native = match spec.kind {
-                    BuiltinKind::Print => Value::Native(BuiltinKind::Print, native_print),
-                    BuiltinKind::Assert => Value::Native(BuiltinKind::Assert, native_assert),
-                };
-                self.globals.insert(name.to_string(), native);
-            }
+        for spec in BUILTINS {
+            let native = match spec.kind {
+                BuiltinKind::Print => Value::Native(BuiltinKind::Print, native_print),
+                BuiltinKind::Assert => Value::Native(BuiltinKind::Assert, native_assert),
+            };
+            self.globals.insert(spec.name.to_string(), native);
         }
     }
 
@@ -128,7 +126,12 @@ impl Vm {
                 .module
                 .functions
                 .get(function_id)
-                .ok_or_else(|| VmError::new(format!("invalid function id {}", function_id), Span::default()))?
+                .ok_or_else(|| {
+                    VmError::new(
+                        format!("invalid function id {}", function_id),
+                        Span::default(),
+                    )
+                })?
                 .clone();
             let ip = self.frames[frame_index].ip;
             let chunk = &function.chunk;
@@ -144,10 +147,9 @@ impl Vm {
             match op {
                 OpCode::Constant => {
                     let index = self.read_u16(frame_index, chunk, span)? as usize;
-                    let constant = chunk
-                        .constants
-                        .get(index)
-                        .ok_or_else(|| VmError::new(format!("invalid constant index {}", index), span))?;
+                    let constant = chunk.constants.get(index).ok_or_else(|| {
+                        VmError::new(format!("invalid constant index {}", index), span)
+                    })?;
                     self.stack.push(self.constant_to_value(constant));
                 }
                 OpCode::Nil => self.stack.push(Value::Nil),
@@ -162,7 +164,9 @@ impl Vm {
                         .locals
                         .get(slot)
                         .cloned()
-                        .ok_or_else(|| VmError::new(format!("invalid local slot {}", slot), span))?;
+                        .ok_or_else(|| {
+                            VmError::new(format!("invalid local slot {}", slot), span)
+                        })?;
                     self.stack.push(value);
                 }
                 OpCode::SetLocal => {
@@ -186,11 +190,10 @@ impl Vm {
                 }
                 OpCode::GetGlobal => {
                     let name = self.read_name(frame_index, chunk, span)?;
-                    let value = self
-                        .globals
-                        .get(&name)
-                        .cloned()
-                        .ok_or_else(|| VmError::new(format!("unknown global '{}'", name), span))?;
+                    let value =
+                        self.globals.get(&name).cloned().ok_or_else(|| {
+                            VmError::new(format!("unknown global '{}'", name), span)
+                        })?;
                     self.stack.push(value);
                 }
                 OpCode::SetGlobal => {
@@ -209,13 +212,24 @@ impl Vm {
                     let left = self.pop(span)?;
                     self.stack.push(add_values(left, right, span)?);
                 }
-                OpCode::Subtract => self.numeric_binary(span, |left, right| left - right, |left, right| left - right)?,
-                OpCode::Multiply => self.numeric_binary(span, |left, right| left * right, |left, right| left * right)?,
-                OpCode::Divide => self.numeric_binary(span, |left, right| left / right, |left, right| left / right)?,
+                OpCode::Subtract => {
+                    self.numeric_binary(span, IntNumericOp::Subtract, |left, right| left - right)?
+                }
+                OpCode::Multiply => {
+                    self.numeric_binary(span, IntNumericOp::Multiply, |left, right| left * right)?
+                }
+                OpCode::Divide => {
+                    self.numeric_binary(span, IntNumericOp::Divide, |left, right| left / right)?
+                }
                 OpCode::Negate => {
                     let value = self.pop(span)?;
                     match value {
-                        Value::Int(value) => self.stack.push(Value::Int(-value)),
+                        Value::Int(value) => {
+                            let negated = value.checked_neg().ok_or_else(|| {
+                                VmError::new("integer overflow in negation", span)
+                            })?;
+                            self.stack.push(Value::Int(negated));
+                        }
                         Value::Float(value) => self.stack.push(Value::Float(-value)),
                         other => {
                             return Err(VmError::new(
@@ -319,11 +333,10 @@ impl Vm {
     }
 
     fn push_frame(&mut self, function_id: usize, args: Vec<Value>, span: Span) -> VmResult<()> {
-        let function = self
-            .module
-            .functions
-            .get(function_id)
-            .ok_or_else(|| VmError::new(format!("invalid function id {}", function_id), span))?;
+        let function =
+            self.module.functions.get(function_id).ok_or_else(|| {
+                VmError::new(format!("invalid function id {}", function_id), span)
+            })?;
         if function.arity != args.len() {
             return Err(VmError::new(
                 format!(
@@ -350,14 +363,29 @@ impl Vm {
     fn numeric_binary(
         &mut self,
         span: Span,
-        int_op: impl FnOnce(i64, i64) -> i64,
+        int_op: IntNumericOp,
         float_op: impl FnOnce(f64, f64) -> f64,
     ) -> VmResult<()> {
         let right = self.pop(span)?;
         let left = self.pop(span)?;
         match (left, right) {
             (Value::Int(left), Value::Int(right)) => {
-                self.stack.push(Value::Int(int_op(left, right)));
+                let value = match int_op {
+                    IntNumericOp::Subtract => left
+                        .checked_sub(right)
+                        .ok_or_else(|| VmError::new("integer overflow in subtraction", span))?,
+                    IntNumericOp::Multiply => left
+                        .checked_mul(right)
+                        .ok_or_else(|| VmError::new("integer overflow in multiplication", span))?,
+                    IntNumericOp::Divide => {
+                        if right == 0 {
+                            return Err(VmError::new("division by zero", span));
+                        }
+                        left.checked_div(right)
+                            .ok_or_else(|| VmError::new("integer overflow in division", span))?
+                    }
+                };
+                self.stack.push(Value::Int(value));
                 Ok(())
             }
             (Value::Float(left), Value::Float(right)) => {
@@ -452,9 +480,21 @@ impl Vm {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum IntNumericOp {
+    Subtract,
+    Multiply,
+    Divide,
+}
+
 fn add_values(left: Value, right: Value, span: Span) -> VmResult<Value> {
     match (left, right) {
-        (Value::Int(left), Value::Int(right)) => Ok(Value::Int(left + right)),
+        (Value::Int(left), Value::Int(right)) => {
+            let value = left
+                .checked_add(right)
+                .ok_or_else(|| VmError::new("integer overflow in addition", span))?;
+            Ok(Value::Int(value))
+        }
         (Value::Float(left), Value::Float(right)) => Ok(Value::Float(left + right)),
         (Value::String(left), Value::String(right)) => Ok(Value::String(left + &right)),
         (left, right) => Err(VmError::new(

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use analysis::{detail_for_symbol, markdown_for_symbol};
 use convert::{errors_to_diagnostics, span_to_range};
 use muninn::analyze_document;
-use state::{DocumentState, ServerState, apply_content_changes};
+use state::{DocumentState, ServerState, apply_content_changes, is_stale_version};
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -27,7 +27,7 @@ impl Backend {
         {
             let mut state = self.state.write().await;
             if let Some(existing) = state.docs.get(&uri)
-                && existing.version > version
+                && is_stale_version(existing.version, version)
             {
                 return;
             }
@@ -115,13 +115,10 @@ impl LanguageServer for Backend {
         let Some(doc) = self.document(&uri).await else {
             return Ok(None);
         };
-        let Some(semantics) = doc.analysis.semantics.as_ref() else {
-            return Ok(None);
-        };
         let Some(offset) = doc.offset_at(position.line, position.character) else {
             return Ok(None);
         };
-        let Some(symbol) = semantics.definition_at_offset(offset) else {
+        let Some(symbol) = doc.analysis.definition_at_offset(offset) else {
             return Ok(None);
         };
         Ok(Some(Hover {
@@ -142,13 +139,10 @@ impl LanguageServer for Backend {
         let Some(doc) = self.document(&uri).await else {
             return Ok(None);
         };
-        let Some(semantics) = doc.analysis.semantics.as_ref() else {
-            return Ok(None);
-        };
         let Some(offset) = doc.offset_at(position.line, position.character) else {
             return Ok(None);
         };
-        let Some(symbol) = semantics.definition_at_offset(offset) else {
+        let Some(symbol) = doc.analysis.definition_at_offset(offset) else {
             return Ok(None);
         };
         Ok(Some(GotoDefinitionResponse::Scalar(Location {
@@ -224,5 +218,20 @@ mod tests {
         assert_eq!(round_trip, symbol_offset);
         let semantics = doc.analysis.semantics.as_ref().expect("semantics");
         assert!(semantics.definition_at_offset(round_trip).is_some());
+    }
+
+    #[test]
+    fn definition_lookup_survives_unrelated_diagnostics() {
+        let source = "let value: Int = 1;\nlet bad: Int = true;\nvalue;\n";
+        let analysis = analyze_document(source);
+        assert!(!analysis.diagnostics.is_empty());
+        let doc = DocumentState::new(2, source.to_string(), analysis);
+
+        let use_offset = source.rfind("value;").expect("value use");
+        let symbol = doc
+            .analysis
+            .definition_at_offset(use_offset)
+            .expect("definition");
+        assert_eq!(symbol.name, "value");
     }
 }

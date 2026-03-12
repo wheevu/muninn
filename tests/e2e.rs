@@ -38,7 +38,9 @@ let x: Int = true;
 
     let analysis = analyze_document(src);
     assert!(!analysis.diagnostics.is_empty());
-    assert!(analysis.diagnostics[0].message.contains("expected initializer of type Int"));
+    assert!(analysis.diagnostics[0]
+        .message
+        .contains("expected initializer of type Int"));
 }
 
 #[test]
@@ -69,10 +71,9 @@ x + 1;
 "#;
 
     let analysis = analyze_document(src);
-    assert!(analysis
-        .diagnostics
-        .iter()
-        .any(|error| error.message.contains("may fall through without returning Int")));
+    assert!(analysis.diagnostics.iter().any(|error| error
+        .message
+        .contains("may fall through without returning Int")));
 }
 
 #[test]
@@ -86,4 +87,36 @@ assert(false);
     assert_eq!(errors[0].phase, "vm");
     assert!(errors[0].message.contains("assertion failed"));
     assert!(errors[0].span.line > 0);
+}
+
+#[test]
+fn reports_runtime_division_by_zero_for_ints() {
+    let src = "1 / 0;";
+    let errors = compile_and_run(src).expect_err("runtime error");
+    assert_eq!(errors[0].phase, "vm");
+    assert!(errors[0].message.contains("division by zero"));
+}
+
+#[test]
+fn reports_runtime_integer_overflow_for_addition() {
+    let src = r#"
+let max: Int = 9223372036854775807;
+max + 1;
+"#;
+    let errors = compile_and_run(src).expect_err("runtime error");
+    assert_eq!(errors[0].phase, "vm");
+    assert!(errors[0].message.contains("integer overflow in addition"));
+}
+
+#[test]
+fn reports_runtime_integer_overflow_for_multiplication() {
+    let src = r#"
+let big: Int = 3037000500;
+big * big;
+"#;
+    let errors = compile_and_run(src).expect_err("runtime error");
+    assert_eq!(errors[0].phase, "vm");
+    assert!(errors[0]
+        .message
+        .contains("integer overflow in multiplication"));
 }

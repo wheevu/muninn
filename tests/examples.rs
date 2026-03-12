@@ -4,10 +4,10 @@ use muninn::{analyze_document, compile_and_run};
 
 #[test]
 fn all_examples_parse_check_and_run() {
-    for path in [
-        "examples/donut.mun",
-        "examples/feature_tour.mun",
-        "examples/perceptron.mun",
+    for (path, expected) in [
+        ("examples/donut.mun", "3"),
+        ("examples/feature_tour.mun", "0"),
+        ("examples/perceptron.mun", "3.0"),
     ] {
         let source = fs::read_to_string(path).expect("example source");
         let analysis = analyze_document(&source);
@@ -20,7 +20,8 @@ fn all_examples_parse_check_and_run() {
                 .map(|error| error.message.clone())
                 .collect::<Vec<_>>()
         );
-        compile_and_run(&source).expect("example run");
+        let result = compile_and_run(&source).expect("example run");
+        assert_eq!(result.to_string(), expected, "unexpected result for {path}");
     }
 }
 
@@ -36,5 +37,6 @@ fn readme_example_runs() {
 
     let analysis = analyze_document(source);
     assert!(analysis.diagnostics.is_empty());
-    compile_and_run(source).expect("README example run");
+    let result = compile_and_run(source).expect("README example run");
+    assert_eq!(result.to_string(), "3");
 }

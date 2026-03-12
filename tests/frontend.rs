@@ -27,3 +27,16 @@ fn frontend_keeps_parse_tree_ids_stable_for_type_queries() {
     };
     assert!(semantics.ty_for_expr(expr_id).is_some());
 }
+
+#[test]
+fn frontend_exposes_symbol_queries_by_offset() {
+    let source = "let value: Int = 1;\nvalue;\n";
+    let analysis = analyze_document(source);
+    assert!(!analysis.has_errors());
+
+    let offset = source.find("value;\n").expect("value use");
+    let symbol = analysis
+        .definition_at_offset(offset)
+        .expect("definition at offset");
+    assert_eq!(symbol.name, "value");
+}

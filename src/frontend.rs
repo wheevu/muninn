@@ -1,9 +1,9 @@
 use crate::ast::Program;
 use crate::error::MuninnError;
 use crate::lexer::Lexer;
-use crate::token::Token;
-use crate::typecheck::{SemanticModel, analyze_program, check_program};
 use crate::parser::Parser;
+use crate::token::Token;
+use crate::typecheck::{analyze_program, check_program, Reference, SemanticModel, Symbol};
 
 #[derive(Debug, Clone, Default)]
 pub struct FrontendAnalysis {
@@ -15,6 +15,37 @@ pub struct FrontendAnalysis {
 impl FrontendAnalysis {
     pub fn is_ok(&self) -> bool {
         self.diagnostics.is_empty()
+    }
+
+    pub fn has_errors(&self) -> bool {
+        !self.is_ok()
+    }
+
+    pub fn program(&self) -> Option<&Program> {
+        self.parsed.as_ref()
+    }
+
+    pub fn semantics(&self) -> Option<&SemanticModel> {
+        self.semantics.as_ref()
+    }
+
+    pub fn definition_at_offset(&self, offset: usize) -> Option<&Symbol> {
+        self.semantics()?.definition_at_offset(offset)
+    }
+
+    pub fn symbol_at_offset(&self, offset: usize) -> Option<&Symbol> {
+        self.semantics()?.symbol_at_offset(offset)
+    }
+
+    pub fn reference_at_offset(&self, offset: usize) -> Option<&Reference> {
+        self.semantics()?.reference_at_offset(offset)
+    }
+
+    pub fn diagnostics_for_phase(&self, phase: &str) -> Vec<&MuninnError> {
+        self.diagnostics
+            .iter()
+            .filter(|error| error.phase == phase)
+            .collect()
     }
 }
 
