@@ -1,4 +1,4 @@
-# Muninn
+# Muninn 🐦‍⬛
 
 Muninn is a small statically typed scripting language implemented in Rust.
 
@@ -55,5 +55,3 @@ Run tests:
 ```bash
 cargo test --workspace
 ```
-
-Internal design rationale and contributor rules are documented in `DESIGN.md`.
