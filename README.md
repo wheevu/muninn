@@ -19,7 +19,11 @@ Muninn is a small statically typed scripting language implemented in Rust.
 - Assignment and function calls
 - Arithmetic, comparison, and logical operators
 - String concatenation with `+`
+- Tensor arithmetic with broadcasting and matrix multiplication
 - Native runtime functions: `print`, `assert`, `tensor_zeros`, `tensor_fill`, `tensor_reshape`, `tensor_matmul`, `tensor_sum`
+- Bytecode toolchain: compile to `.mubc` and execute with `run-bc`
+- Hot reload support that preserves globals at VM safe points
+- Capacity reservation mode for allocation-free interpreter hot paths
 
 ## Example
 
