@@ -10,19 +10,26 @@ Muninn is a small statically typed scripting language implemented in Rust.
 
 ## Features
 
-- Primitive types: `Int`, `Float`, `Bool`, `String`, `Tensor`, `Void`
-- `let` bindings with optional local type inference
-- Mutable bindings via `mut`
-- Top-level functions with typed parameters and explicit return types
-- `if` statements and `while` loops
-- Expression-valued blocks and `if/else`
-- Assignment and function calls
-- Arithmetic, comparison, and logical operators
+### Language
+- Primitive types: `Int`, `Float`, `Bool`, `String`, `Tensor`, and `Void`
+- `let` bindings with optional local type inference, plus `mut` for mutable variables
+- Functions with typed parameters and explicit return types
+- Control flow with `if`, `while`, expression-valued blocks, and `if/else`
+- Assignment, function calls, arithmetic, comparison, and logical operators
 - String concatenation with `+`
 - Tensor arithmetic with broadcasting and matrix multiplication
-- Native runtime functions: `print`, `assert`, `tensor_zeros`, `tensor_fill`, `tensor_reshape`, `tensor_matmul`, `tensor_sum`
-- Bytecode toolchain: compile to `.mubc` and execute with `run-bc`
-- Hot reload support that preserves globals at VM safe points
+
+### Runtime
+- Built-in functions for printing and assertions
+- Tensor built-ins for creating, reshaping, multiplying, and reducing tensors
+
+### Tooling
+- Type-check source files
+- Compile programs to `.mubc` bytecode
+- Run source files or precompiled bytecode
+- Hot reload with global preservation at VM safe points
+
+### Performance
 - Capacity reservation mode for allocation-free interpreter hot paths
 
 ## Example
@@ -61,7 +68,8 @@ print(multiple);
 divisor;
 ```
 
-## Commands
+<details>
+  <summary> Commands</summary>
 
 Run demo:
 
