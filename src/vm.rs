@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use crate::bytecode::{BytecodeModule, Chunk, Constant, GlobalValueKind, OpCode, validate_module};
 use crate::error::MuninnError;
+use crate::jit::{TraceEngine, TraceKey, TraceOutcome, TraceStats};
 use crate::native::{
-    add_values, divide_values, invoke_native, multiply_values, registered_natives,
-    subtract_values,
+    add_values, divide_values, invoke_native, multiply_values, registered_natives, subtract_values,
 };
 use crate::runtime::{VmError, VmResult};
 use crate::span::Span;
@@ -21,11 +21,35 @@ pub enum ReloadStatus {
 pub struct Vm {
     module: BytecodeModule,
     globals: HashMap<String, Value>,
+    global_cache: HashMap<String, CachedGlobal>,
+    globals_epoch: u64,
     stack: Vec<Value>,
     frames: Vec<CallFrame>,
     started: bool,
     pending_reload: Option<BytecodeModule>,
     preserve_existing_globals: bool,
+    traces: Option<TraceEngine>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmOptions {
+    pub jit_enabled: bool,
+    pub hot_loop_threshold: usize,
+}
+
+impl Default for VmOptions {
+    fn default() -> Self {
+        Self {
+            jit_enabled: false,
+            hot_loop_threshold: 100,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedGlobal {
+    value: Value,
+    epoch: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -37,13 +61,22 @@ struct CallFrame {
 
 impl Vm {
     pub fn new(module: BytecodeModule) -> Self {
+        Self::new_with_options(module, VmOptions::default())
+    }
+
+    pub fn new_with_options(module: BytecodeModule, options: VmOptions) -> Self {
         let mut vm = Self {
             globals: HashMap::new(),
+            global_cache: HashMap::new(),
+            globals_epoch: 0,
             stack: Vec::new(),
             frames: Vec::new(),
             started: false,
             pending_reload: None,
             preserve_existing_globals: false,
+            traces: options
+                .jit_enabled
+                .then(|| TraceEngine::new(options.hot_loop_threshold)),
             module,
         };
         vm.install_natives();
@@ -52,6 +85,10 @@ impl Vm {
             vm.module.estimated_frame_capacity(),
         );
         vm
+    }
+
+    pub fn jit_stats(&self) -> Option<TraceStats> {
+        self.traces.as_ref().map(TraceEngine::stats)
     }
 
     pub fn reserve_runtime_capacity(&mut self, stack_capacity: usize, frame_capacity: usize) {
@@ -83,6 +120,7 @@ impl Vm {
 
     pub fn request_reload(&mut self, module: BytecodeModule) -> VmResult<()> {
         validate_module(&module).map_err(first_validation_error)?;
+        self.invalidate_runtime_caches();
         self.pending_reload = Some(module);
         Ok(())
     }
@@ -114,6 +152,7 @@ impl Vm {
         }
 
         self.module = pending;
+        self.invalidate_runtime_caches();
         self.started = false;
         self.preserve_existing_globals = true;
         self.reserve_runtime_capacity(
@@ -159,6 +198,28 @@ impl Vm {
         let frame_index = self.frames.len() - 1;
         let function_id = self.frames[frame_index].function_id;
         let ip = self.frames[frame_index].ip;
+
+        if self.pending_reload.is_none()
+            && let Some(traces) = &mut self.traces
+            && let Some(outcome) = traces.run_if_ready(
+                TraceKey {
+                    function_id,
+                    loop_header_ip: ip,
+                },
+                &self.module,
+                &mut self.stack,
+                self.frames[frame_index].stack_base,
+            )?
+        {
+            match outcome {
+                TraceOutcome::Continue => return Ok(None),
+                TraceOutcome::ExitToInterpreter { ip } => {
+                    self.frames[frame_index].ip = ip;
+                    return Ok(None);
+                }
+            }
+        }
+
         let span = self.current_chunk(function_id).span_at(ip);
         let byte = *self
             .current_chunk(function_id)
@@ -176,7 +237,9 @@ impl Vm {
                     .current_chunk(function_id)
                     .constants
                     .get(index)
-                    .ok_or_else(|| VmError::new(format!("invalid constant index {}", index), span))?;
+                    .ok_or_else(|| {
+                        VmError::new(format!("invalid constant index {}", index), span)
+                    })?;
                 self.stack.push(self.constant_to_value(constant));
             }
             OpCode::Nil => self.stack.push(Value::Nil),
@@ -204,15 +267,12 @@ impl Vm {
                     && self.module.global_kind(&name) != Some(GlobalValueKind::Function);
                 if !preserve {
                     self.globals.insert(name, value);
+                    self.bump_globals_epoch();
                 }
             }
             OpCode::GetGlobal => {
                 let name = self.read_name(frame_index, span)?;
-                let value = self
-                    .globals
-                    .get(&name)
-                    .cloned()
-                    .ok_or_else(|| VmError::new(format!("unknown global '{}'", name), span))?;
+                let value = self.get_global_cached(&name, span)?;
                 self.stack.push(value);
             }
             OpCode::SetGlobal => {
@@ -222,6 +282,7 @@ impl Vm {
                     return Err(VmError::new(format!("unknown global '{}'", name), span));
                 }
                 self.globals.insert(name, value);
+                self.bump_globals_epoch();
             }
             OpCode::Add => {
                 let right = self.pop(span)?;
@@ -307,7 +368,17 @@ impl Vm {
             }
             OpCode::Loop => {
                 let jump = self.read_u16(frame_index, span)? as usize;
-                self.frames[frame_index].ip = self.frames[frame_index].ip.saturating_sub(jump);
+                let loop_header_ip = self.frames[frame_index].ip.saturating_sub(jump);
+                self.frames[frame_index].ip = loop_header_ip;
+                if let Some(traces) = &mut self.traces {
+                    traces.observe_loop(
+                        &self.module,
+                        TraceKey {
+                            function_id,
+                            loop_header_ip,
+                        },
+                    );
+                }
             }
             OpCode::Call => {
                 let arg_count = self.read_u8(frame_index, span)? as usize;
@@ -359,7 +430,10 @@ impl Vm {
 
             let Some(expected_kind) = next_module.global_kind(name) else {
                 return Err(VmError::new(
-                    format!("reload rejected: global '{}' is missing in new module", name),
+                    format!(
+                        "reload rejected: global '{}' is missing in new module",
+                        name
+                    ),
                     Span::default(),
                 ));
             };
@@ -452,11 +526,10 @@ impl Vm {
     }
 
     fn push_frame(&mut self, function_id: usize, arg_count: usize, span: Span) -> VmResult<()> {
-        let function = self
-            .module
-            .functions
-            .get(function_id)
-            .ok_or_else(|| VmError::new(format!("invalid function id {}", function_id), span))?;
+        let function =
+            self.module.functions.get(function_id).ok_or_else(|| {
+                VmError::new(format!("invalid function id {}", function_id), span)
+            })?;
         if function.arity != arg_count {
             return Err(VmError::new(
                 format!(
@@ -525,6 +598,40 @@ impl Vm {
             .pop()
             .ok_or_else(|| VmError::new("stack underflow", span))
     }
+
+    fn get_global_cached(&mut self, name: &str, span: Span) -> VmResult<Value> {
+        if let Some(cached) = self.global_cache.get(name)
+            && cached.epoch == self.globals_epoch
+        {
+            return Ok(cached.value.clone());
+        }
+
+        let value = self
+            .globals
+            .get(name)
+            .cloned()
+            .ok_or_else(|| VmError::new(format!("unknown global '{}'", name), span))?;
+        self.global_cache.insert(
+            name.to_string(),
+            CachedGlobal {
+                value: value.clone(),
+                epoch: self.globals_epoch,
+            },
+        );
+        Ok(value)
+    }
+
+    fn bump_globals_epoch(&mut self) {
+        self.globals_epoch = self.globals_epoch.wrapping_add(1);
+        self.global_cache.clear();
+    }
+
+    fn invalidate_runtime_caches(&mut self) {
+        self.bump_globals_epoch();
+        if let Some(traces) = &mut self.traces {
+            traces.clear();
+        }
+    }
 }
 
 fn value_matches_kind(value: &Value, kind: GlobalValueKind) -> bool {
@@ -540,9 +647,8 @@ fn value_matches_kind(value: &Value, kind: GlobalValueKind) -> bool {
 }
 
 fn first_validation_error(errors: Vec<MuninnError>) -> VmError {
-    let first = errors
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| MuninnError::new("compiler", "invalid bytecode module", Span::default()));
+    let first = errors.into_iter().next().unwrap_or_else(|| {
+        MuninnError::new("compiler", "invalid bytecode module", Span::default())
+    });
     VmError::new(first.message, first.span)
 }

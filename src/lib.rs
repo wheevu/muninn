@@ -3,6 +3,7 @@ pub mod bytecode;
 pub mod compiler;
 pub mod error;
 pub mod frontend;
+pub mod jit;
 pub mod lexer;
 pub mod native;
 pub mod parser;
@@ -19,7 +20,9 @@ pub use bytecode::{
     BytecodeDecodeError, BytecodeModule, GlobalSpec, GlobalValueKind, decode_bytecode_module,
     encode_bytecode_module,
 };
-pub use frontend::{FrontendAnalysis, analyze_document, check_document, lex_document, parse_document};
+pub use frontend::{
+    FrontendAnalysis, analyze_document, check_document, lex_document, parse_document,
+};
 pub use typecheck::{SemanticModel, Symbol, SymbolKind, Ty};
 pub use value::Value;
 
@@ -27,7 +30,7 @@ use bytecode::{GlobalSpec as ModuleGlobalSpec, GlobalValueKind as ModuleGlobalVa
 use compiler::compile_program;
 use error::MuninnError;
 use typecheck::check_program;
-use vm::Vm;
+use vm::{Vm, VmOptions};
 
 pub fn compile_to_bytecode(source: &str) -> Result<BytecodeModule, Vec<MuninnError>> {
     let program = parse_document(source)?;
@@ -52,8 +55,15 @@ pub fn compile_to_bytecode(source: &str) -> Result<BytecodeModule, Vec<MuninnErr
 }
 
 pub fn run_bytecode_module(module: BytecodeModule) -> Result<Value, Vec<MuninnError>> {
+    run_bytecode_module_with_options(module, VmOptions::default())
+}
+
+pub fn run_bytecode_module_with_options(
+    module: BytecodeModule,
+    options: VmOptions,
+) -> Result<Value, Vec<MuninnError>> {
     bytecode::validate_module(&module)?;
-    let mut vm = Vm::new(module);
+    let mut vm = Vm::new_with_options(module, options);
     vm.run()
         .map_err(|error| vec![MuninnError::new("vm", error.message, error.span)])
 }

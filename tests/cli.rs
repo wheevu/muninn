@@ -1,7 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn write_temp_source(contents: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
@@ -9,7 +12,11 @@ fn write_temp_source(contents: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
-    path.push(format!("muninn-cli-{stamp}.mun"));
+    let count = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    path.push(format!(
+        "muninn-cli-{}-{stamp}-{count}.mun",
+        std::process::id()
+    ));
     fs::write(&path, contents).expect("write temp source");
     path
 }
@@ -20,7 +27,11 @@ fn temp_bytecode_path() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
-    path.push(format!("muninn-cli-{stamp}.mubc"));
+    let count = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    path.push(format!(
+        "muninn-cli-{}-{stamp}-{count}.mubc",
+        std::process::id()
+    ));
     path
 }
 
@@ -149,7 +160,36 @@ fn help_flag_prints_usage() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Usage:"));
-    assert!(stdout.contains("muninn run <file>"));
+    assert!(stdout.contains("muninn run [--jit]"));
+}
+
+#[test]
+fn run_command_accepts_jit_flag() {
+    let source = r#"
+fn count() -> Int {
+    let mut total: Int = 0;
+    while (total < 3) {
+        total = total + 1;
+    }
+    return total;
+}
+count();
+"#;
+    let path = write_temp_source(source);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_muninn"))
+        .arg("run")
+        .arg("--jit")
+        .arg("--jit-threshold")
+        .arg("1")
+        .arg(&path)
+        .output()
+        .expect("run muninn run --jit");
+
+    let _ = fs::remove_file(&path);
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("=> 3"));
 }
 
 #[test]

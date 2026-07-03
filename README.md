@@ -31,6 +31,8 @@ Muninn is a small statically typed scripting language implemented in Rust.
 
 ### Performance
 - Capacity reservation mode for allocation-free interpreter hot paths
+- Optional tracing JIT for small hot `Int` loops, backed by Cranelift
+- Inline global lookup cache with reload-safe invalidation
 
 ## Example
 
@@ -83,6 +85,18 @@ Run a file:
 cargo run -- run examples/dsa_euclid.mun
 ```
 
+Run with the experimental JIT:
+
+```bash
+cargo run --features jit -- run --jit examples/dsa_euclid.mun
+```
+
+Lower the hot-loop threshold while experimenting:
+
+```bash
+cargo run --features jit -- run --jit --jit-threshold 1 examples/dsa_euclid.mun
+```
+
 Type-check a file:
 
 ```bash
@@ -111,4 +125,10 @@ Run benchmarks:
 
 ```bash
 cargo bench --bench runtime
+```
+
+Run benchmarks with JIT support compiled in:
+
+```bash
+cargo bench --features jit --bench runtime
 ```

@@ -1,5 +1,8 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use muninn::compile_and_run;
+use muninn::vm::VmOptions;
+use muninn::{
+    compile_and_run, compile_to_bytecode, run_bytecode_module, run_bytecode_module_with_options,
+};
 
 fn bench_scalar_loop(c: &mut Criterion) {
     let source = r#"
@@ -11,6 +14,35 @@ total;
 "#;
     c.bench_function("scalar_loop", |b| {
         b.iter(|| compile_and_run(black_box(source)).expect("scalar loop"))
+    });
+}
+
+fn bench_vm_only_scalar_loop(c: &mut Criterion) {
+    let source = r#"
+fn count() -> Int {
+    let mut total: Int = 0;
+    while (total < 2000) {
+        total = total + 1;
+    }
+    return total;
+}
+count();
+"#;
+    let module = compile_to_bytecode(source).expect("scalar loop module");
+    c.bench_function("vm_only_scalar_loop_interpreter", |b| {
+        b.iter(|| run_bytecode_module(black_box(module.clone())).expect("vm scalar loop"))
+    });
+    c.bench_function("vm_only_scalar_loop_jit_cold", |b| {
+        b.iter(|| {
+            run_bytecode_module_with_options(
+                black_box(module.clone()),
+                VmOptions {
+                    jit_enabled: true,
+                    hot_loop_threshold: 8,
+                },
+            )
+            .expect("jit scalar loop")
+        })
     });
 }
 
@@ -52,6 +84,7 @@ tensor_sum(product);
 criterion_group!(
     benches,
     bench_scalar_loop,
+    bench_vm_only_scalar_loop,
     bench_native_calls,
     bench_tensor_elementwise,
     bench_tensor_matmul
