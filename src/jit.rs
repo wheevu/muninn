@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::bytecode::{BytecodeModule, Chunk, Constant, OpCode};
-use crate::runtime::{VmError, VmResult};
+use crate::runtime::{VmResult, vm_error};
 use crate::span::Span;
 use crate::value::Value;
 
@@ -316,13 +316,13 @@ impl Trace {
                 TraceOp::Pop { span } => {
                     trace_stack
                         .pop()
-                        .ok_or_else(|| VmError::new("stack underflow", span))?;
+                        .ok_or_else(|| vm_error("stack underflow", span))?;
                 }
                 TraceOp::JumpIfFalse { target_ip, span } => {
                     let value = trace_stack
                         .last()
                         .copied()
-                        .ok_or_else(|| VmError::new("stack underflow", span))?;
+                        .ok_or_else(|| vm_error("stack underflow", span))?;
                     match value {
                         TraceValue::Bool(false) => {
                             stack.push(Value::Bool(false));
@@ -330,7 +330,7 @@ impl Trace {
                         }
                         TraceValue::Bool(true) => {}
                         TraceValue::Int(_) => {
-                            return Err(VmError::new("condition must be Bool, got Int", span));
+                            return Err(vm_error("condition must be Bool, got Int", span));
                         }
                     }
                 }
@@ -408,11 +408,11 @@ fn read_u16(chunk: &Chunk, ip: &mut usize) -> Result<u16, TraceBuildError> {
 fn read_int_local(stack: &[Value], stack_base: usize, slot: usize, span: Span) -> VmResult<i64> {
     match stack.get(stack_base + slot) {
         Some(Value::Int(value)) => Ok(*value),
-        Some(other) => Err(VmError::new(
+        Some(other) => Err(vm_error(
             format!("trace expected Int local, got {}", other.kind_name()),
             span,
         )),
-        None => Err(VmError::new("invalid local slot", span)),
+        None => Err(vm_error("invalid local slot", span)),
     }
 }
 
@@ -424,7 +424,7 @@ fn write_int_local(
     span: Span,
 ) -> VmResult<()> {
     let Some(local) = stack.get_mut(stack_base + slot) else {
-        return Err(VmError::new("invalid local slot", span));
+        return Err(vm_error("invalid local slot", span));
     };
     *local = Value::Int(value);
     Ok(())
@@ -433,8 +433,8 @@ fn write_int_local(
 fn pop_int(stack: &mut Vec<TraceValue>, span: Span) -> VmResult<i64> {
     match stack.pop() {
         Some(TraceValue::Int(value)) => Ok(value),
-        Some(TraceValue::Bool(_)) => Err(VmError::new("trace expected Int, got Bool", span)),
-        None => Err(VmError::new("stack underflow", span)),
+        Some(TraceValue::Bool(_)) => Err(vm_error("trace expected Int, got Bool", span)),
+        None => Err(vm_error("stack underflow", span)),
     }
 }
 
@@ -442,19 +442,19 @@ fn checked_binary(kind: IntBinaryOp, left: i64, right: i64, span: Span) -> VmRes
     match kind {
         IntBinaryOp::Add => left
             .checked_add(right)
-            .ok_or_else(|| VmError::new("integer overflow in addition", span)),
+            .ok_or_else(|| vm_error("integer overflow in addition", span)),
         IntBinaryOp::Subtract => left
             .checked_sub(right)
-            .ok_or_else(|| VmError::new("integer overflow in subtraction", span)),
+            .ok_or_else(|| vm_error("integer overflow in subtraction", span)),
         IntBinaryOp::Multiply => left
             .checked_mul(right)
-            .ok_or_else(|| VmError::new("integer overflow in multiplication", span)),
+            .ok_or_else(|| vm_error("integer overflow in multiplication", span)),
         IntBinaryOp::Divide => {
             if right == 0 {
-                return Err(VmError::new("division by zero", span));
+                return Err(vm_error("division by zero", span));
             }
             left.checked_div(right)
-                .ok_or_else(|| VmError::new("integer overflow in division", span))
+                .ok_or_else(|| vm_error("integer overflow in division", span))
         }
     }
 }

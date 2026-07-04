@@ -1,18 +1,8 @@
+use crate::error::MuninnError;
 use crate::span::Span;
 
-pub type VmResult<T> = Result<T, VmError>;
+pub type VmResult<T> = Result<T, MuninnError>;
 
-#[derive(Debug, Clone)]
-pub struct VmError {
-    pub message: String,
-    pub span: Span,
-}
-
-impl VmError {
-    pub fn new(message: impl Into<String>, span: Span) -> Self {
-        Self {
-            message: message.into(),
-            span,
-        }
-    }
+pub fn vm_error(message: impl Into<String>, span: Span) -> MuninnError {
+    MuninnError::new("vm", message, span)
 }

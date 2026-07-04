@@ -96,11 +96,11 @@ pub fn analyze_program(program: &Program) -> SemanticModel {
 }
 
 pub fn check_program(program: &Program) -> Result<SemanticModel, Vec<MuninnError>> {
-    let model = analyze_program(program);
+    let mut model = analyze_program(program);
     if model.diagnostics.is_empty() {
         Ok(model)
     } else {
-        Err(model.diagnostics.clone())
+        Err(std::mem::take(&mut model.diagnostics))
     }
 }
 
@@ -614,7 +614,10 @@ impl Analyzer {
             return Ty::Error;
         }
 
-        let native = native_by_kind(kind);
+        let Some(native) = native_by_kind(kind) else {
+            self.error(span, format!("unknown native function {:?}", kind));
+            return Ty::Error;
+        };
         if let Some(signature) = native
             .signatures
             .iter()
@@ -840,7 +843,10 @@ pub fn display_ty(ty: &Ty) -> String {
             display_ty(ret)
         ),
         Ty::NativeFunction(kind) => {
-            format!("native fn {}", native_by_kind(*kind).name)
+            format!(
+                "native fn {}",
+                native_by_kind(*kind).map_or("unknown", |native| native.name)
+            )
         }
         Ty::Error => "<error>".to_string(),
     }

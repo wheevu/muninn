@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::runtime::{VmError, VmResult};
+use crate::runtime::{VmResult, vm_error};
 use crate::span::Span;
 
 const MAX_TENSOR_ELEMENTS: usize = 10_000_000;
@@ -31,7 +31,7 @@ impl Tensor {
     pub fn reshape(&self, shape: Vec<usize>, span: Span) -> VmResult<Self> {
         let expected = element_count(&shape, span)?;
         if expected != self.data.len() {
-            return Err(VmError::new(
+            return Err(vm_error(
                 format!(
                     "cannot reshape tensor with {} elements into shape {}",
                     self.data.len(),
@@ -111,7 +111,7 @@ pub fn scalar_tensor_binary(scalar: f64, tensor: &Tensor, op: impl Fn(f64, f64) 
 
 pub fn matmul(left: &Tensor, right: &Tensor, span: Span) -> VmResult<Tensor> {
     if left.shape.len() != 2 || right.shape.len() != 2 {
-        return Err(VmError::new(
+        return Err(vm_error(
             "tensor_matmul expects rank-2 tensors".to_string(),
             span,
         ));
@@ -120,7 +120,7 @@ pub fn matmul(left: &Tensor, right: &Tensor, span: Span) -> VmResult<Tensor> {
     let (m, k) = (left.shape[0], left.shape[1]);
     let (rhs_k, n) = (right.shape[0], right.shape[1]);
     if k != rhs_k {
-        return Err(VmError::new(
+        return Err(vm_error(
             format!(
                 "tensor_matmul shape mismatch: left {} and right {}",
                 format_shape(left.shape()),
@@ -132,9 +132,9 @@ pub fn matmul(left: &Tensor, right: &Tensor, span: Span) -> VmResult<Tensor> {
 
     let result_len = m
         .checked_mul(n)
-        .ok_or_else(|| VmError::new("tensor_matmul result shape is too large", span))?;
+        .ok_or_else(|| vm_error("tensor_matmul result shape is too large", span))?;
     if result_len > MAX_TENSOR_ELEMENTS {
-        return Err(VmError::new(
+        return Err(vm_error(
             format!(
                 "tensor_matmul result has {} elements, maximum is {}",
                 result_len, MAX_TENSOR_ELEMENTS
@@ -179,7 +179,7 @@ fn broadcast_shape(
         } else if right_dim == 1 {
             left_dim
         } else {
-            return Err(VmError::new(
+            return Err(vm_error(
                 format!(
                     "{} shape mismatch: left {} and right {} cannot be broadcast",
                     op_name,
@@ -201,7 +201,7 @@ fn strides(shape: &[usize], span: Span) -> VmResult<Vec<usize>> {
     for index in (1..shape.len()).rev() {
         strides[index - 1] = strides[index]
             .checked_mul(shape[index])
-            .ok_or_else(|| VmError::new("tensor shape is too large", span))?;
+            .ok_or_else(|| vm_error("tensor shape is too large", span))?;
     }
     Ok(strides)
 }
@@ -243,10 +243,10 @@ fn element_count(shape: &[usize], span: Span) -> VmResult<usize> {
     let count = shape.iter().try_fold(1usize, |total, dim| {
         total
             .checked_mul(*dim)
-            .ok_or_else(|| VmError::new("tensor shape is too large", span))
+            .ok_or_else(|| vm_error("tensor shape is too large", span))
     })?;
     if count > MAX_TENSOR_ELEMENTS {
-        return Err(VmError::new(
+        return Err(vm_error(
             format!(
                 "tensor has {} elements, maximum is {}",
                 count, MAX_TENSOR_ELEMENTS

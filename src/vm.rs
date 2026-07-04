@@ -7,7 +7,7 @@ use crate::jit::{TraceEngine, TraceKey, TraceOutcome, TraceStats};
 use crate::native::{
     add_values, divide_values, invoke_native, multiply_values, registered_natives, subtract_values,
 };
-use crate::runtime::{VmError, VmResult};
+use crate::runtime::{VmResult, vm_error};
 use crate::span::Span;
 use crate::value::Value;
 
@@ -140,13 +140,18 @@ impl Vm {
             return Ok(());
         }
         if !self.is_safe_point() {
-            return Err(VmError::new(
+            return Err(vm_error(
                 "reload is only allowed at a safe point",
                 Span::default(),
             ));
         }
 
-        let pending = self.pending_reload.take().expect("pending reload");
+        let Some(pending) = self.pending_reload.take() else {
+            return Err(vm_error(
+                "reload requested but no pending module",
+                Span::default(),
+            ));
+        };
         self.validate_reload_compatibility(&pending)?;
 
         self.module = pending;
@@ -223,9 +228,9 @@ impl Vm {
             .current_chunk(function_id)
             .code
             .get(ip)
-            .ok_or_else(|| VmError::new("instruction pointer out of range", span))?;
+            .ok_or_else(|| vm_error("instruction pointer out of range", span))?;
         let op = OpCode::from_byte(byte)
-            .ok_or_else(|| VmError::new(format!("invalid opcode {}", byte), span))?;
+            .ok_or_else(|| vm_error(format!("invalid opcode {}", byte), span))?;
         self.frames[frame_index].ip += 1;
 
         match op {
@@ -235,9 +240,7 @@ impl Vm {
                     .current_chunk(function_id)
                     .constants
                     .get(index)
-                    .ok_or_else(|| {
-                        VmError::new(format!("invalid constant index {}", index), span)
-                    })?;
+                    .ok_or_else(|| vm_error(format!("invalid constant index {}", index), span))?;
                 self.stack.push(self.constant_to_value(constant));
             }
             OpCode::Nil => self.stack.push(Value::Nil),
@@ -277,7 +280,7 @@ impl Vm {
                 let name = self.read_name(frame_index, span)?;
                 let value = self.pop(span)?;
                 if !self.globals.contains_key(&name) {
-                    return Err(VmError::new(format!("unknown global '{}'", name), span));
+                    return Err(vm_error(format!("unknown global '{}'", name), span));
                 }
                 self.globals.insert(name, value);
                 self.bump_globals_epoch();
@@ -308,12 +311,12 @@ impl Vm {
                     Value::Int(value) => {
                         let negated = value
                             .checked_neg()
-                            .ok_or_else(|| VmError::new("integer overflow in negation", span))?;
+                            .ok_or_else(|| vm_error("integer overflow in negation", span))?;
                         self.stack.push(Value::Int(negated));
                     }
                     Value::Float(value) => self.stack.push(Value::Float(-value)),
                     other => {
-                        return Err(VmError::new(
+                        return Err(vm_error(
                             format!("cannot negate {}", other.stringify()),
                             span,
                         ));
@@ -325,7 +328,7 @@ impl Vm {
                 match value {
                     Value::Bool(value) => self.stack.push(Value::Bool(!value)),
                     other => {
-                        return Err(VmError::new(
+                        return Err(vm_error(
                             format!("cannot apply '!' to {}", other.stringify()),
                             span,
                         ));
@@ -345,7 +348,7 @@ impl Vm {
                     .stack
                     .last()
                     .cloned()
-                    .ok_or_else(|| VmError::new("stack underflow", span))?;
+                    .ok_or_else(|| vm_error("stack underflow", span))?;
                 match condition {
                     Value::Bool(value) => {
                         if !value {
@@ -353,7 +356,7 @@ impl Vm {
                         }
                     }
                     other => {
-                        return Err(VmError::new(
+                        return Err(vm_error(
                             format!("condition must be Bool, got {}", other.stringify()),
                             span,
                         ));
@@ -386,7 +389,7 @@ impl Vm {
                 let value = self.stack.pop().unwrap_or(Value::Nil);
                 let function = &self.module.functions[function_id];
                 if function.expects_return_value && matches!(value, Value::Nil) {
-                    return Err(VmError::new(
+                    return Err(vm_error(
                         format!(
                             "function '{}' fell through without returning a value",
                             function.name
@@ -395,7 +398,9 @@ impl Vm {
                     ));
                 }
 
-                let frame = self.frames.pop().expect("frame");
+                let Some(frame) = self.frames.pop() else {
+                    return Err(vm_error("return without a call frame", span));
+                };
                 self.stack.truncate(frame.stack_base);
                 if self.frames.is_empty() {
                     self.started = false;
@@ -415,7 +420,7 @@ impl Vm {
 
     fn validate_reload_compatibility(&self, next_module: &BytecodeModule) -> VmResult<()> {
         if next_module.entry_function >= next_module.functions.len() {
-            return Err(VmError::new(
+            return Err(vm_error(
                 "reload module is missing a valid entry function",
                 Span::default(),
             ));
@@ -427,7 +432,7 @@ impl Vm {
             }
 
             let Some(expected_kind) = next_module.global_kind(name) else {
-                return Err(VmError::new(
+                return Err(vm_error(
                     format!(
                         "reload rejected: global '{}' is missing in new module",
                         name
@@ -437,7 +442,7 @@ impl Vm {
             };
 
             if !value_matches_kind(value, expected_kind) {
-                return Err(VmError::new(
+                return Err(vm_error(
                     format!(
                         "reload rejected: global '{}' changed kind from {} to {:?}",
                         name,
@@ -463,7 +468,7 @@ impl Vm {
             .current_chunk(function_id)
             .code
             .get(ip)
-            .ok_or_else(|| VmError::new("instruction pointer out of range", span))?;
+            .ok_or_else(|| vm_error("instruction pointer out of range", span))?;
         self.frames[frame_index].ip += 1;
         Ok(byte)
     }
@@ -481,11 +486,11 @@ impl Vm {
             .current_chunk(function_id)
             .constants
             .get(index)
-            .ok_or_else(|| VmError::new(format!("invalid constant index {}", index), span))?;
+            .ok_or_else(|| vm_error(format!("invalid constant index {}", index), span))?;
         if let Constant::String(name) = constant {
             Ok(name.clone())
         } else {
-            Err(VmError::new("expected string constant", span))
+            Err(vm_error("expected string constant", span))
         }
     }
 
@@ -493,14 +498,14 @@ impl Vm {
         let function_id = self.frames[frame_index].function_id;
         let local_count = self.module.functions[function_id].local_count;
         if slot >= local_count {
-            return Err(VmError::new(format!("invalid local slot {}", slot), span));
+            return Err(vm_error(format!("invalid local slot {}", slot), span));
         }
         Ok(self.frames[frame_index].stack_base + slot)
     }
 
     fn call_value(&mut self, arg_count: usize, span: Span) -> VmResult<()> {
         if self.stack.len() < arg_count + 1 {
-            return Err(VmError::new("stack underflow", span));
+            return Err(vm_error("stack underflow", span));
         }
 
         let callee_index = self.stack.len() - arg_count - 1;
@@ -516,7 +521,7 @@ impl Vm {
                 self.stack.push(result);
                 Ok(())
             }
-            other => Err(VmError::new(
+            other => Err(vm_error(
                 format!("{} is not callable", other.stringify()),
                 span,
             )),
@@ -524,12 +529,13 @@ impl Vm {
     }
 
     fn push_frame(&mut self, function_id: usize, arg_count: usize, span: Span) -> VmResult<()> {
-        let function =
-            self.module.functions.get(function_id).ok_or_else(|| {
-                VmError::new(format!("invalid function id {}", function_id), span)
-            })?;
+        let function = self
+            .module
+            .functions
+            .get(function_id)
+            .ok_or_else(|| vm_error(format!("invalid function id {}", function_id), span))?;
         if function.arity != arg_count {
-            return Err(VmError::new(
+            return Err(vm_error(
                 format!(
                     "function '{}' expects {} arguments, got {}",
                     function.name, function.arity, arg_count
@@ -565,11 +571,11 @@ impl Vm {
             (Value::Float(left), Value::Float(right)) => {
                 let ordering = left
                     .partial_cmp(&right)
-                    .ok_or_else(|| VmError::new("cannot compare NaN values", span))?;
+                    .ok_or_else(|| vm_error("cannot compare NaN values", span))?;
                 self.stack.push(Value::Bool(predicate(ordering)));
                 Ok(())
             }
-            (left, right) => Err(VmError::new(
+            (left, right) => Err(vm_error(
                 format!(
                     "ordering comparison expects matching numeric types, got {} and {}",
                     left.stringify(),
@@ -594,7 +600,7 @@ impl Vm {
     fn pop(&mut self, span: Span) -> VmResult<Value> {
         self.stack
             .pop()
-            .ok_or_else(|| VmError::new("stack underflow", span))
+            .ok_or_else(|| vm_error("stack underflow", span))
     }
 
     fn get_global_cached(&mut self, name: &str, span: Span) -> VmResult<Value> {
@@ -608,7 +614,7 @@ impl Vm {
             .globals
             .get(name)
             .cloned()
-            .ok_or_else(|| VmError::new(format!("unknown global '{}'", name), span))?;
+            .ok_or_else(|| vm_error(format!("unknown global '{}'", name), span))?;
         self.global_cache.insert(
             name.to_string(),
             CachedGlobal {
@@ -644,9 +650,9 @@ fn value_matches_kind(value: &Value, kind: GlobalValueKind) -> bool {
     )
 }
 
-fn first_validation_error(errors: Vec<MuninnError>) -> VmError {
+fn first_validation_error(errors: Vec<MuninnError>) -> MuninnError {
     let first = errors.into_iter().next().unwrap_or_else(|| {
         MuninnError::new("compiler", "invalid bytecode module", Span::default())
     });
-    VmError::new(first.message, first.span)
+    vm_error(first.message, first.span)
 }

@@ -42,33 +42,33 @@ impl Parser {
     }
 
     fn parse_top_level_statement(&mut self) -> Result<Stmt, MuninnError> {
-        if self.match_simple(TokenKind::Fn) {
+        if self.match_simple(&TokenKind::Fn) {
             return self.parse_function_statement();
         }
         self.parse_statement(false)
     }
 
     fn parse_statement(&mut self, inside_block: bool) -> Result<Stmt, MuninnError> {
-        if self.match_simple(TokenKind::Let) {
+        if self.match_simple(&TokenKind::Let) {
             return self.parse_let_statement();
         }
-        if self.match_simple(TokenKind::Return) {
+        if self.match_simple(&TokenKind::Return) {
             return self.parse_return_statement();
         }
-        if self.match_simple(TokenKind::While) {
+        if self.match_simple(&TokenKind::While) {
             return self.parse_while_statement();
         }
-        if self.match_simple(TokenKind::If) {
+        if self.match_simple(&TokenKind::If) {
             return self.parse_if_statement();
         }
-        if self.match_simple(TokenKind::Fn) {
+        if self.match_simple(&TokenKind::Fn) {
             return Err(MuninnError::new(
                 "parser",
                 "nested functions are not supported",
                 self.previous().span,
             ));
         }
-        if !inside_block && self.check_simple(TokenKind::Eof) {
+        if !inside_block && self.check_simple(&TokenKind::Eof) {
             return Err(MuninnError::new(
                 "parser",
                 "unexpected end of input",
@@ -84,14 +84,14 @@ impl Parser {
     fn parse_function_statement(&mut self) -> Result<Stmt, MuninnError> {
         let start = self.previous().span;
         let (name, name_span) = self.consume_identifier_with_span("expected function name")?;
-        self.consume_simple(TokenKind::LeftParen, "expected '(' after function name")?;
+        self.consume_simple(&TokenKind::LeftParen, "expected '(' after function name")?;
 
         let mut params = Vec::new();
-        if !self.check_simple(TokenKind::RightParen) {
+        if !self.check_simple(&TokenKind::RightParen) {
             loop {
                 let param_span = self.peek().span;
                 let param_name = self.consume_identifier("expected parameter name")?;
-                self.consume_simple(TokenKind::Colon, "expected ':' after parameter name")?;
+                self.consume_simple(&TokenKind::Colon, "expected ':' after parameter name")?;
                 let param_ty = self.parse_type_expr()?;
                 params.push(Param {
                     id: self.alloc_id(),
@@ -99,13 +99,13 @@ impl Parser {
                     ty: param_ty,
                     span: param_span.merge(self.previous().span),
                 });
-                if !self.match_simple(TokenKind::Comma) {
+                if !self.match_simple(&TokenKind::Comma) {
                     break;
                 }
             }
         }
-        self.consume_simple(TokenKind::RightParen, "expected ')' after parameters")?;
-        self.consume_simple(TokenKind::Arrow, "expected '->' before return type")?;
+        self.consume_simple(&TokenKind::RightParen, "expected ')' after parameters")?;
+        self.consume_simple(&TokenKind::Arrow, "expected '->' before return type")?;
         let return_type = self.parse_type_expr()?;
         let body = self.parse_block()?;
         let span = start.merge(body.span);
@@ -127,17 +127,17 @@ impl Parser {
 
     fn parse_let_statement(&mut self) -> Result<Stmt, MuninnError> {
         let start = self.previous().span;
-        let mutable = self.match_simple(TokenKind::Mut);
+        let mutable = self.match_simple(&TokenKind::Mut);
         let (name, name_span) = self.consume_identifier_with_span("expected variable name")?;
-        let ty = if self.match_simple(TokenKind::Colon) {
+        let ty = if self.match_simple(&TokenKind::Colon) {
             Some(self.parse_type_expr()?)
         } else {
             None
         };
-        self.consume_simple(TokenKind::Equal, "expected '=' after variable name")?;
+        self.consume_simple(&TokenKind::Equal, "expected '=' after variable name")?;
         let initializer = self.parse_expression()?;
         let end_span = self
-            .consume_simple(TokenKind::Semicolon, "expected ';' after let binding")?
+            .consume_simple(&TokenKind::Semicolon, "expected ';' after let binding")?
             .span;
         Ok(Stmt {
             id: self.alloc_id(),
@@ -154,13 +154,13 @@ impl Parser {
 
     fn parse_return_statement(&mut self) -> Result<Stmt, MuninnError> {
         let start = self.previous().span;
-        let value = if self.check_simple(TokenKind::Semicolon) {
+        let value = if self.check_simple(&TokenKind::Semicolon) {
             None
         } else {
             Some(self.parse_expression()?)
         };
         let end_span = self
-            .consume_simple(TokenKind::Semicolon, "expected ';' after return")?
+            .consume_simple(&TokenKind::Semicolon, "expected ';' after return")?
             .span;
         Ok(Stmt {
             id: self.alloc_id(),
@@ -171,9 +171,9 @@ impl Parser {
 
     fn parse_while_statement(&mut self) -> Result<Stmt, MuninnError> {
         let start = self.previous().span;
-        self.consume_simple(TokenKind::LeftParen, "expected '(' after 'while'")?;
+        self.consume_simple(&TokenKind::LeftParen, "expected '(' after 'while'")?;
         let condition = self.parse_expression()?;
-        self.consume_simple(TokenKind::RightParen, "expected ')' after while condition")?;
+        self.consume_simple(&TokenKind::RightParen, "expected ')' after while condition")?;
         let body = self.parse_block()?;
         let body_span = body.span;
         Ok(Stmt {
@@ -206,10 +206,10 @@ impl Parser {
     fn parse_assignment_statement(&mut self) -> Result<Stmt, MuninnError> {
         let start = self.peek().span;
         let (name, name_span) = self.consume_identifier_with_span("expected assignment target")?;
-        self.consume_simple(TokenKind::Equal, "expected '=' in assignment")?;
+        self.consume_simple(&TokenKind::Equal, "expected '=' in assignment")?;
         let value = self.parse_expression()?;
         let end_span = self
-            .consume_simple(TokenKind::Semicolon, "expected ';' after assignment")?
+            .consume_simple(&TokenKind::Semicolon, "expected ';' after assignment")?
             .span;
         Ok(Stmt {
             id: self.alloc_id(),
@@ -225,7 +225,7 @@ impl Parser {
     fn parse_expression_statement(&mut self) -> Result<Stmt, MuninnError> {
         let expr = self.parse_expression()?;
         let end_span = self
-            .consume_simple(TokenKind::Semicolon, "expected ';' after expression")?
+            .consume_simple(&TokenKind::Semicolon, "expected ';' after expression")?
             .span;
         let span = expr.span.merge(end_span);
         Ok(Stmt {
@@ -237,7 +237,7 @@ impl Parser {
 
     fn parse_block(&mut self) -> Result<Block, MuninnError> {
         let start = self
-            .consume_simple(TokenKind::LeftBrace, "expected '{'")?
+            .consume_simple(&TokenKind::LeftBrace, "expected '{'")?
             .span;
         self.parse_block_after_left_brace(start, false)
     }
@@ -249,12 +249,12 @@ impl Parser {
     ) -> Result<Block, MuninnError> {
         let mut statements = Vec::new();
         let mut value = None;
-        while !self.check_simple(TokenKind::RightBrace) && !self.is_at_end() {
-            if allow_trailing_if_expr && self.check_simple(TokenKind::If) {
+        while !self.check_simple(&TokenKind::RightBrace) && !self.is_at_end() {
+            if allow_trailing_if_expr && self.check_simple(&TokenKind::If) {
                 let checkpoint = (self.current, self.next_node_id);
                 let token = self.advance().clone();
                 match self.parse_if_expression(token.span) {
-                    Ok(expr) if self.match_simple(TokenKind::Semicolon) => {
+                    Ok(expr) if self.match_simple(&TokenKind::Semicolon) => {
                         let end_span = self.previous().span;
                         statements.push(Stmt {
                             id: self.alloc_id(),
@@ -263,7 +263,7 @@ impl Parser {
                         });
                         continue;
                     }
-                    Ok(expr) if self.check_simple(TokenKind::RightBrace) => {
+                    Ok(expr) if self.check_simple(&TokenKind::RightBrace) => {
                         value = Some(Box::new(expr));
                         break;
                     }
@@ -280,7 +280,7 @@ impl Parser {
             }
 
             let expr = self.parse_expression()?;
-            if self.match_simple(TokenKind::Semicolon) {
+            if self.match_simple(&TokenKind::Semicolon) {
                 let end_span = self.previous().span;
                 statements.push(Stmt {
                     id: self.alloc_id(),
@@ -293,7 +293,7 @@ impl Parser {
             }
         }
         let end_span = self
-            .consume_simple(TokenKind::RightBrace, "expected '}' after block")?
+            .consume_simple(&TokenKind::RightBrace, "expected '}' after block")?
             .span;
         Ok(Block {
             id: self.alloc_id(),
@@ -309,7 +309,7 @@ impl Parser {
 
     fn parse_or(&mut self) -> Result<Expr, MuninnError> {
         let mut expr = self.parse_and()?;
-        while self.match_simple(TokenKind::OrOr) {
+        while self.match_simple(&TokenKind::OrOr) {
             let op_span = self.previous().span;
             let right = self.parse_and()?;
             let span = expr.span.merge(right.span);
@@ -328,7 +328,7 @@ impl Parser {
 
     fn parse_and(&mut self) -> Result<Expr, MuninnError> {
         let mut expr = self.parse_equality()?;
-        while self.match_simple(TokenKind::AndAnd) {
+        while self.match_simple(&TokenKind::AndAnd) {
             let op_span = self.previous().span;
             let right = self.parse_equality()?;
             let span = expr.span.merge(right.span);
@@ -348,13 +348,12 @@ impl Parser {
     fn parse_equality(&mut self) -> Result<Expr, MuninnError> {
         let mut expr = self.parse_comparison()?;
         while self.match_any(&[TokenKind::EqualEqual, TokenKind::BangEqual]) {
-            let op_token = self.previous().clone();
-            let right = self.parse_comparison()?;
-            let op = match op_token.kind {
+            let op = match &self.previous().kind {
                 TokenKind::EqualEqual => BinaryOp::Equal,
                 TokenKind::BangEqual => BinaryOp::NotEqual,
                 _ => unreachable!(),
             };
+            let right = self.parse_comparison()?;
             let span = expr.span.merge(right.span);
             expr = Expr {
                 id: self.alloc_id(),
@@ -377,15 +376,14 @@ impl Parser {
             TokenKind::Less,
             TokenKind::LessEqual,
         ]) {
-            let op_token = self.previous().clone();
-            let right = self.parse_term()?;
-            let op = match op_token.kind {
+            let op = match &self.previous().kind {
                 TokenKind::Greater => BinaryOp::Greater,
                 TokenKind::GreaterEqual => BinaryOp::GreaterEqual,
                 TokenKind::Less => BinaryOp::Less,
                 TokenKind::LessEqual => BinaryOp::LessEqual,
                 _ => unreachable!(),
             };
+            let right = self.parse_term()?;
             let span = expr.span.merge(right.span);
             expr = Expr {
                 id: self.alloc_id(),
@@ -403,13 +401,12 @@ impl Parser {
     fn parse_term(&mut self) -> Result<Expr, MuninnError> {
         let mut expr = self.parse_factor()?;
         while self.match_any(&[TokenKind::Plus, TokenKind::Minus]) {
-            let op_token = self.previous().clone();
-            let right = self.parse_factor()?;
-            let op = match op_token.kind {
+            let op = match &self.previous().kind {
                 TokenKind::Plus => BinaryOp::Add,
                 TokenKind::Minus => BinaryOp::Subtract,
                 _ => unreachable!(),
             };
+            let right = self.parse_factor()?;
             let span = expr.span.merge(right.span);
             expr = Expr {
                 id: self.alloc_id(),
@@ -427,13 +424,12 @@ impl Parser {
     fn parse_factor(&mut self) -> Result<Expr, MuninnError> {
         let mut expr = self.parse_unary()?;
         while self.match_any(&[TokenKind::Star, TokenKind::Slash]) {
-            let op_token = self.previous().clone();
-            let right = self.parse_unary()?;
-            let op = match op_token.kind {
+            let op = match &self.previous().kind {
                 TokenKind::Star => BinaryOp::Multiply,
                 TokenKind::Slash => BinaryOp::Divide,
                 _ => unreachable!(),
             };
+            let right = self.parse_unary()?;
             let span = expr.span.merge(right.span);
             expr = Expr {
                 id: self.alloc_id(),
@@ -450,14 +446,16 @@ impl Parser {
 
     fn parse_unary(&mut self) -> Result<Expr, MuninnError> {
         if self.match_any(&[TokenKind::Bang, TokenKind::Minus]) {
-            let op_token = self.previous().clone();
+            let prev = &self.tokens[self.current.saturating_sub(1)];
+            let op_is_not = matches!(prev.kind, TokenKind::Bang);
+            let op_span = prev.span;
             let expr = self.parse_unary()?;
-            let op = match op_token.kind {
-                TokenKind::Bang => UnaryOp::Not,
-                TokenKind::Minus => UnaryOp::Negate,
-                _ => unreachable!(),
+            let op = if op_is_not {
+                UnaryOp::Not
+            } else {
+                UnaryOp::Negate
             };
-            let span = op_token.span.merge(expr.span);
+            let span = op_span.merge(expr.span);
             return Ok(Expr {
                 id: self.alloc_id(),
                 kind: ExprKind::Unary {
@@ -473,18 +471,18 @@ impl Parser {
     fn parse_call(&mut self) -> Result<Expr, MuninnError> {
         let mut expr = self.parse_primary()?;
         loop {
-            if self.match_simple(TokenKind::LeftParen) {
+            if self.match_simple(&TokenKind::LeftParen) {
                 let mut args = Vec::new();
-                if !self.check_simple(TokenKind::RightParen) {
+                if !self.check_simple(&TokenKind::RightParen) {
                     loop {
                         args.push(self.parse_expression()?);
-                        if !self.match_simple(TokenKind::Comma) {
+                        if !self.match_simple(&TokenKind::Comma) {
                             break;
                         }
                     }
                 }
                 let end =
-                    self.consume_simple(TokenKind::RightParen, "expected ')' after arguments")?;
+                    self.consume_simple(&TokenKind::RightParen, "expected ')' after arguments")?;
                 let span = expr.span.merge(end.span);
                 expr = Expr {
                     id: self.alloc_id(),
@@ -523,7 +521,7 @@ impl Parser {
             TokenKind::LeftParen => {
                 let expr = self.parse_expression()?;
                 let end_span = self
-                    .consume_simple(TokenKind::RightParen, "expected ')' after expression")?
+                    .consume_simple(&TokenKind::RightParen, "expected ')' after expression")?
                     .span;
                 return Ok(Expr {
                     id: self.alloc_id(),
@@ -579,21 +577,21 @@ impl Parser {
         &mut self,
         allow_expression_branches: bool,
     ) -> Result<(Expr, Block, Option<Block>), MuninnError> {
-        self.consume_simple(TokenKind::LeftParen, "expected '(' after 'if'")?;
+        self.consume_simple(&TokenKind::LeftParen, "expected '(' after 'if'")?;
         let condition = self.parse_expression()?;
-        self.consume_simple(TokenKind::RightParen, "expected ')' after if condition")?;
+        self.consume_simple(&TokenKind::RightParen, "expected ')' after if condition")?;
         let then_branch = if allow_expression_branches {
             let start = self
-                .consume_simple(TokenKind::LeftBrace, "expected '{'")?
+                .consume_simple(&TokenKind::LeftBrace, "expected '{'")?
                 .span;
             self.parse_block_after_left_brace(start, true)?
         } else {
             self.parse_block()?
         };
-        let else_branch = if self.match_simple(TokenKind::Else) {
+        let else_branch = if self.match_simple(&TokenKind::Else) {
             Some(if allow_expression_branches {
                 let start = self
-                    .consume_simple(TokenKind::LeftBrace, "expected '{'")?
+                    .consume_simple(&TokenKind::LeftBrace, "expected '{'")?
                     .span;
                 self.parse_block_after_left_brace(start, true)?
             } else {
@@ -663,17 +661,17 @@ impl Parser {
 
     fn consume_simple(
         &mut self,
-        expected: TokenKind,
+        expected: &TokenKind,
         message: &'static str,
     ) -> Result<&Token, MuninnError> {
-        if self.check_simple(expected.clone()) {
+        if self.check_simple(expected) {
             Ok(self.advance())
         } else {
             Err(MuninnError::new("parser", message, self.peek().span))
         }
     }
 
-    fn match_simple(&mut self, expected: TokenKind) -> bool {
+    fn match_simple(&mut self, expected: &TokenKind) -> bool {
         if self.check_simple(expected) {
             self.current += 1;
             true
@@ -684,7 +682,7 @@ impl Parser {
 
     fn match_any(&mut self, expected: &[TokenKind]) -> bool {
         for kind in expected {
-            if self.check_simple(kind.clone()) {
+            if self.check_simple(kind) {
                 self.current += 1;
                 return true;
             }
@@ -692,8 +690,8 @@ impl Parser {
         false
     }
 
-    fn check_simple(&self, expected: TokenKind) -> bool {
-        same_variant(&self.peek().kind, &expected)
+    fn check_simple(&self, expected: &TokenKind) -> bool {
+        std::mem::discriminant(&self.peek().kind) == std::mem::discriminant(expected)
     }
 
     fn advance(&mut self) -> &Token {
@@ -720,10 +718,6 @@ impl Parser {
         self.next_node_id += 1;
         NodeId(id)
     }
-}
-
-fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
-    std::mem::discriminant(left) == std::mem::discriminant(right)
 }
 
 #[cfg(test)]

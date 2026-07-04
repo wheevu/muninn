@@ -7,6 +7,7 @@ use crate::span::Span;
 const MUBC_MAGIC: &[u8; 4] = b"MUBC";
 const MUBC_VERSION: u16 = 1;
 const MAX_DECODE_ITEMS: usize = 1_000_000;
+const MAX_BYTE_ARRAY_LENGTH: usize = 1_048_576; // 1 MiB
 
 #[derive(Debug, Clone)]
 pub struct BytecodeModule {
@@ -725,6 +726,12 @@ impl<'a> BytecodeReader<'a> {
 
     fn read_bytes(&mut self) -> Result<Vec<u8>, BytecodeDecodeError> {
         let len = self.read_u32()? as usize;
+        if len > MAX_BYTE_ARRAY_LENGTH {
+            return Err(BytecodeDecodeError::new(format!(
+                "byte array length {} exceeds maximum {} in .mubc payload",
+                len, MAX_BYTE_ARRAY_LENGTH
+            )));
+        }
         Ok(self.read_exact(len)?.to_vec())
     }
 
@@ -938,5 +945,46 @@ mod tests {
         let error = decode_bytecode_module(&bytes).expect_err("decode error");
 
         assert!(error.message.contains("declared globals count"));
+    }
+
+    #[test]
+    fn decode_never_panics_on_random_input() {
+        // Property: random bytes must not panic the decoder
+        for seed in 0..100u64 {
+            let bytes: Vec<u8> = (0..128)
+                .map(|i| seed.wrapping_mul(17 + i as u64) as u8)
+                .collect();
+            let _ = decode_bytecode_module(&bytes);
+        }
+    }
+
+    #[test]
+    fn decode_rejects_oversized_strings() {
+        let module = valid_module_with_string("x".repeat(1_048_577));
+        let bytes = encode_bytecode_module(&module);
+
+        let error = decode_bytecode_module(&bytes).expect_err("decode error");
+        assert!(error.message.contains("exceeds maximum"));
+    }
+
+    fn valid_module_with_string(s: String) -> BytecodeModule {
+        let mut chunk = Chunk::new();
+        let idx = chunk
+            .add_constant(Constant::String(s))
+            .expect("add constant");
+        chunk.write_op(OpCode::Constant, Span::default());
+        chunk.write_u16(idx, Span::default());
+        chunk.write_op(OpCode::Return, Span::default());
+        BytecodeModule {
+            functions: vec![FunctionBytecode {
+                name: "entry".to_string(),
+                arity: 0,
+                local_count: 0,
+                expects_return_value: false,
+                chunk,
+            }],
+            entry_function: 0,
+            globals: Vec::new(),
+        }
     }
 }

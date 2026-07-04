@@ -21,31 +21,16 @@ impl FrontendAnalysis {
         !self.is_ok()
     }
 
-    pub fn program(&self) -> Option<&Program> {
-        self.parsed.as_ref()
-    }
-
-    pub fn semantics(&self) -> Option<&SemanticModel> {
-        self.semantics.as_ref()
-    }
-
     pub fn definition_at_offset(&self, offset: usize) -> Option<&Symbol> {
-        self.semantics()?.definition_at_offset(offset)
+        self.semantics.as_ref()?.definition_at_offset(offset)
     }
 
     pub fn symbol_at_offset(&self, offset: usize) -> Option<&Symbol> {
-        self.semantics()?.symbol_at_offset(offset)
+        self.semantics.as_ref()?.symbol_at_offset(offset)
     }
 
     pub fn reference_at_offset(&self, offset: usize) -> Option<&Reference> {
-        self.semantics()?.reference_at_offset(offset)
-    }
-
-    pub fn diagnostics_for_phase(&self, phase: &str) -> Vec<&MuninnError> {
-        self.diagnostics
-            .iter()
-            .filter(|error| error.phase == phase)
-            .collect()
+        self.semantics.as_ref()?.reference_at_offset(offset)
     }
 }
 

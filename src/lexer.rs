@@ -207,7 +207,10 @@ impl<'a> Lexer<'a> {
     fn scan_identifier(&mut self, first: char) -> Token {
         let mut value = String::from(first);
         while self.peek().is_some_and(is_identifier_continue) {
-            value.push(self.advance().expect("identifier char"));
+            let Some(ch) = self.advance() else {
+                break;
+            };
+            value.push(ch);
         }
 
         let kind = match value.as_str() {
