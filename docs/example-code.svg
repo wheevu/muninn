@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="660" viewBox="0 0 980 660">
+  <rect width="980" height="660" rx="18" fill="#0b0f14"/>
+  <rect x="22" y="22" width="936" height="616" rx="10" fill="#121821" stroke="#2e3440"/>
+  <text x="48" y="64" fill="#d8dee9" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="700" letter-spacing="0.08em">MUNINN ᚱ · EXAMPLE</text>
+  <text x="48" y="92" fill="#7f8ea3" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">typed functions, mutable locals, assertions, and output</text>
+
+  <rect x="48" y="124" width="884" height="420" rx="8" fill="#0f141b" stroke="#2e3440"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14">
+    <text x="76" y="160"><tspan fill="#d9b86c">fn</tspan><tspan fill="#8fbcbb"> abs_int</tspan><tspan fill="#d8dee9">(value: </tspan><tspan fill="#88c0d0">Int</tspan><tspan fill="#d8dee9">) -&gt; </tspan><tspan fill="#88c0d0">Int</tspan><tspan fill="#d8dee9"> {</tspan></text>
+    <text x="104" y="188"><tspan fill="#d9b86c">if</tspan><tspan fill="#d8dee9"> (value &lt; </tspan><tspan fill="#b9a7ff">0</tspan><tspan fill="#d8dee9">) { </tspan><tspan fill="#d9b86c">return</tspan><tspan fill="#d8dee9"> -value; }</tspan></text>
+    <text x="104" y="216"><tspan fill="#d9b86c">return</tspan><tspan fill="#d8dee9"> value;</tspan></text>
+    <text x="76" y="244" fill="#d8dee9">}</text>
+
+    <text x="76" y="286"><tspan fill="#d9b86c">fn</tspan><tspan fill="#8fbcbb"> gcd</tspan><tspan fill="#d8dee9">(a: </tspan><tspan fill="#88c0d0">Int</tspan><tspan fill="#d8dee9">, b: </tspan><tspan fill="#88c0d0">Int</tspan><tspan fill="#d8dee9">) -&gt; </tspan><tspan fill="#88c0d0">Int</tspan><tspan fill="#d8dee9"> {</tspan></text>
+    <text x="104" y="314"><tspan fill="#d9b86c">let mut</tspan><tspan fill="#d8dee9"> x: </tspan><tspan fill="#88c0d0">Int</tspan><tspan fill="#d8dee9"> = abs_int(a);</tspan></text>
+    <text x="104" y="342"><tspan fill="#d9b86c">let mut</tspan><tspan fill="#d8dee9"> y: </tspan><tspan fill="#88c0d0">Int</tspan><tspan fill="#d8dee9"> = abs_int(b);</tspan></text>
+    <text x="104" y="370"><tspan fill="#d9b86c">while</tspan><tspan fill="#d8dee9"> (y != </tspan><tspan fill="#b9a7ff">0</tspan><tspan fill="#d8dee9">) {</tspan></text>
+    <text x="132" y="398"><tspan fill="#d9b86c">let</tspan><tspan fill="#d8dee9"> remainder: </tspan><tspan fill="#88c0d0">Int</tspan><tspan fill="#d8dee9"> = x - (x / y) * y;</tspan></text>
+    <text x="132" y="426"><tspan fill="#d8dee9">x = y; y = remainder;</tspan></text>
+    <text x="104" y="454" fill="#d8dee9">}</text>
+    <text x="104" y="482"><tspan fill="#d9b86c">return</tspan><tspan fill="#d8dee9"> x;</tspan></text>
+    <text x="76" y="510" fill="#d8dee9">}</text>
+
+    <text x="530" y="482"><tspan fill="#d9b86c">let</tspan><tspan fill="#d8dee9"> divisor: </tspan><tspan fill="#88c0d0">Int</tspan><tspan fill="#d8dee9"> = gcd(</tspan><tspan fill="#b9a7ff">84</tspan><tspan fill="#d8dee9">, </tspan><tspan fill="#b9a7ff">30</tspan><tspan fill="#d8dee9">);</tspan></text>
+  </g>
+
+  <rect x="48" y="566" width="884" height="48" rx="8" fill="#0f141b" stroke="#2e3440"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14">
+    <text x="76" y="596"><tspan fill="#d9b86c">assert</tspan><tspan fill="#d8dee9">(divisor == </tspan><tspan fill="#b9a7ff">6</tspan><tspan fill="#d8dee9">);</tspan></text>
+    <text x="330" y="596"><tspan fill="#8fbcbb">print</tspan><tspan fill="#d8dee9">(divisor);</tspan></text>
+    <text x="560" y="596"><tspan fill="#7f8ea3">=&gt;</tspan><tspan fill="#d8dee9"> 6</tspan></text>
+  </g>
+</svg>

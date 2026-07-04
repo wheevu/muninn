@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="410" viewBox="0 0 980 410">
+  <rect width="980" height="410" rx="18" fill="#0b0f14"/>
+  <rect x="22" y="22" width="936" height="366" rx="10" fill="#121821" stroke="#2e3440"/>
+  <text x="48" y="64" fill="#d8dee9" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="700" letter-spacing="0.08em">RUNTIME MODES ᚱ</text>
+  <text x="48" y="92" fill="#7f8ea3" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">same source, different paths through the toolchain</text>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+    <rect x="54" y="132" width="872" height="44" rx="7" fill="#0f141b" stroke="#2e3440"/>
+    <text x="84" y="160" fill="#88c0d0" font-size="13" font-weight="700">check</text>
+    <text x="190" y="160" fill="#d8dee9" font-size="13">source .mun → diagnostics</text>
+
+    <rect x="54" y="190" width="872" height="44" rx="7" fill="#0f141b" stroke="#2e3440"/>
+    <text x="84" y="218" fill="#8fbcbb" font-size="13" font-weight="700">run</text>
+    <text x="190" y="218" fill="#d8dee9" font-size="13">source .mun → bytecode → VM result</text>
+
+    <rect x="54" y="248" width="872" height="44" rx="7" fill="#0f141b" stroke="#2e3440"/>
+    <text x="84" y="276" fill="#d9b86c" font-size="13" font-weight="700">build</text>
+    <text x="190" y="276" fill="#d8dee9" font-size="13">source .mun → .mubc artifact</text>
+
+    <rect x="54" y="306" width="872" height="44" rx="7" fill="#0f141b" stroke="#2e3440"/>
+    <text x="84" y="334" fill="#b9a7ff" font-size="13" font-weight="700">run --jit</text>
+    <text x="190" y="334" fill="#d8dee9" font-size="13">hot Int loops → Cranelift JIT</text>
+  </g>
+
+  <text x="48" y="374" fill="#4c566a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">ᚲ check · ᚱ run · ᛒ build · ᛃ jit</text>
+</svg>
