@@ -27,10 +27,7 @@ pub fn utf16_position_to_offset(
 ) -> Option<usize> {
     let line = line as usize;
     let start = *line_starts.get(line)?;
-    let end = line_starts
-        .get(line + 1)
-        .copied()
-        .unwrap_or(source.len());
+    let end = line_starts.get(line + 1).copied().unwrap_or(source.len());
     let mut current = start;
     let mut utf16_units = 0u32;
 
@@ -61,7 +58,9 @@ pub fn offset_to_line_column(source: &str, line_starts: &[usize], offset: usize)
 }
 
 fn line_for_offset(line_starts: &[usize], offset: usize) -> usize {
-    line_starts.partition_point(|start| *start <= offset).saturating_sub(1)
+    line_starts
+        .partition_point(|start| *start <= offset)
+        .saturating_sub(1)
 }
 
 #[cfg(test)]

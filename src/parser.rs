@@ -186,7 +186,12 @@ impl Parser {
     fn parse_if_statement(&mut self) -> Result<Stmt, MuninnError> {
         let start = self.previous().span;
         let (condition, then_branch, else_branch) = self.parse_if_parts(false)?;
-        let span = start.merge(else_branch.as_ref().map(|block| block.span).unwrap_or(then_branch.span));
+        let span = start.merge(
+            else_branch
+                .as_ref()
+                .map(|block| block.span)
+                .unwrap_or(then_branch.span),
+        );
         Ok(Stmt {
             id: self.alloc_id(),
             kind: StmtKind::If {
@@ -231,7 +236,9 @@ impl Parser {
     }
 
     fn parse_block(&mut self) -> Result<Block, MuninnError> {
-        let start = self.consume_simple(TokenKind::LeftBrace, "expected '{'")?.span;
+        let start = self
+            .consume_simple(TokenKind::LeftBrace, "expected '{'")?
+            .span;
         self.parse_block_after_left_brace(start, false)
     }
 
@@ -476,7 +483,8 @@ impl Parser {
                         }
                     }
                 }
-                let end = self.consume_simple(TokenKind::RightParen, "expected ')' after arguments")?;
+                let end =
+                    self.consume_simple(TokenKind::RightParen, "expected ')' after arguments")?;
                 let span = expr.span.merge(end.span);
                 expr = Expr {
                     id: self.alloc_id(),
@@ -548,11 +556,7 @@ impl Parser {
             TokenKind::TypeString => Ok(TypeExpr::String),
             TokenKind::TypeTensor => Ok(TypeExpr::Tensor),
             TokenKind::TypeVoid => Ok(TypeExpr::Void),
-            _ => Err(MuninnError::new(
-                "parser",
-                "expected type name",
-                token.span,
-            )),
+            _ => Err(MuninnError::new("parser", "expected type name", token.span)),
         }
     }
 
@@ -579,14 +583,18 @@ impl Parser {
         let condition = self.parse_expression()?;
         self.consume_simple(TokenKind::RightParen, "expected ')' after if condition")?;
         let then_branch = if allow_expression_branches {
-            let start = self.consume_simple(TokenKind::LeftBrace, "expected '{'")?.span;
+            let start = self
+                .consume_simple(TokenKind::LeftBrace, "expected '{'")?
+                .span;
             self.parse_block_after_left_brace(start, true)?
         } else {
             self.parse_block()?
         };
         let else_branch = if self.match_simple(TokenKind::Else) {
             Some(if allow_expression_branches {
-                let start = self.consume_simple(TokenKind::LeftBrace, "expected '{'")?.span;
+                let start = self
+                    .consume_simple(TokenKind::LeftBrace, "expected '{'")?
+                    .span;
                 self.parse_block_after_left_brace(start, true)?
             } else {
                 self.parse_block()?
@@ -637,7 +645,8 @@ impl Parser {
     }
 
     fn consume_identifier(&mut self, message: &'static str) -> Result<String, MuninnError> {
-        self.consume_identifier_with_span(message).map(|(name, _)| name)
+        self.consume_identifier_with_span(message)
+            .map(|(name, _)| name)
     }
 
     fn consume_identifier_with_span(

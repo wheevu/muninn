@@ -6,6 +6,7 @@ use crate::span::Span;
 
 const MUBC_MAGIC: &[u8; 4] = b"MUBC";
 const MUBC_VERSION: u16 = 1;
+const MAX_DECODE_ITEMS: usize = 1_000_000;
 
 #[derive(Debug, Clone)]
 pub struct BytecodeModule {
@@ -40,6 +41,12 @@ impl BytecodeModule {
 
     pub fn estimated_frame_capacity(&self) -> usize {
         self.functions.len().max(4)
+    }
+}
+
+impl Default for BytecodeModule {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -160,6 +167,12 @@ impl Chunk {
                 .entry(ConstantKey::from_constant(constant))
                 .or_insert(index as u16);
         }
+    }
+}
+
+impl Default for Chunk {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -297,6 +310,7 @@ pub fn decode_bytecode_module(bytes: &[u8]) -> Result<BytecodeModule, BytecodeDe
 
     let entry_function = reader.read_u32()? as usize;
     let global_count = reader.read_u32()? as usize;
+    reader.ensure_count(global_count, "globals")?;
     let mut globals = Vec::with_capacity(global_count);
     for _ in 0..global_count {
         let name = reader.read_string()?;
@@ -305,6 +319,7 @@ pub fn decode_bytecode_module(bytes: &[u8]) -> Result<BytecodeModule, BytecodeDe
     }
 
     let function_count = reader.read_u32()? as usize;
+    reader.ensure_count(function_count, "functions")?;
     let mut functions = Vec::with_capacity(function_count);
     for _ in 0..function_count {
         let name = reader.read_string()?;
@@ -314,12 +329,14 @@ pub fn decode_bytecode_module(bytes: &[u8]) -> Result<BytecodeModule, BytecodeDe
 
         let code = reader.read_bytes()?;
         let span_count = reader.read_u32()? as usize;
+        reader.ensure_count(span_count, "spans")?;
         let mut spans = Vec::with_capacity(span_count);
         for _ in 0..span_count {
             spans.push(reader.read_span()?);
         }
 
         let constant_count = reader.read_u32()? as usize;
+        reader.ensure_count(constant_count, "constants")?;
         let mut constants = Vec::with_capacity(constant_count);
         for _ in 0..constant_count {
             constants.push(reader.read_constant()?);
@@ -341,8 +358,7 @@ pub fn decode_bytecode_module(bytes: &[u8]) -> Result<BytecodeModule, BytecodeDe
         entry_function,
         globals,
     };
-    validate_module(&module)
-        .map_err(|errors| BytecodeDecodeError::new(errors[0].to_string()))?;
+    validate_module(&module).map_err(|errors| BytecodeDecodeError::new(errors[0].to_string()))?;
     Ok(module)
 }
 
@@ -660,6 +676,20 @@ impl<'a> BytecodeReader<'a> {
         }
     }
 
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.offset)
+    }
+
+    fn ensure_count(&self, count: usize, label: &str) -> Result<(), BytecodeDecodeError> {
+        if count > MAX_DECODE_ITEMS || count > self.remaining() {
+            return Err(BytecodeDecodeError::new(format!(
+                "declared {} count {} is too large for .mubc payload",
+                label, count
+            )));
+        }
+        Ok(())
+    }
+
     fn expect_magic(&mut self, magic: &[u8]) -> Result<(), BytecodeDecodeError> {
         let found = self.read_exact(magic.len())?;
         if found == magic {
@@ -733,9 +763,7 @@ impl<'a> BytecodeReader<'a> {
     fn read_exact(&mut self, len: usize) -> Result<&'a [u8], BytecodeDecodeError> {
         let end = self.offset.saturating_add(len);
         if end > self.bytes.len() {
-            return Err(BytecodeDecodeError::new(
-                "unexpected end of .mubc payload",
-            ));
+            return Err(BytecodeDecodeError::new("unexpected end of .mubc payload"));
         }
         let slice = &self.bytes[self.offset..end];
         self.offset = end;
@@ -808,9 +836,11 @@ mod tests {
         };
 
         let errors = validate_module(&module).expect_err("validator errors");
-        assert!(errors
-            .iter()
-            .any(|error| error.message.contains("local slot 9 out of bounds")));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("local slot 9 out of bounds"))
+        );
     }
 
     #[test]
@@ -845,8 +875,14 @@ mod tests {
         assert_eq!(decoded.globals, module.globals);
         assert_eq!(decoded.functions.len(), 1);
         assert_eq!(decoded.functions[0].name, module.functions[0].name);
-        assert_eq!(decoded.functions[0].chunk.code, module.functions[0].chunk.code);
-        assert_eq!(decoded.functions[0].chunk.spans, module.functions[0].chunk.spans);
+        assert_eq!(
+            decoded.functions[0].chunk.code,
+            module.functions[0].chunk.code
+        );
+        assert_eq!(
+            decoded.functions[0].chunk.spans,
+            module.functions[0].chunk.spans
+        );
         assert_eq!(decoded.functions[0].chunk.constants.len(), 1);
     }
 
@@ -877,7 +913,11 @@ mod tests {
                 arity: 0,
                 local_count: 0,
                 expects_return_value: false,
-                chunk: Chunk::from_parts(vec![OpCode::Return as u8], vec![Span::default()], Vec::new()),
+                chunk: Chunk::from_parts(
+                    vec![OpCode::Return as u8],
+                    vec![Span::default()],
+                    Vec::new(),
+                ),
             }],
             entry_function: 0,
             globals: module.globals,
@@ -886,5 +926,17 @@ mod tests {
 
         let error = decode_bytecode_module(&bytes).expect_err("decode error");
         assert!(error.message.contains("unexpected end"));
+    }
+
+    #[test]
+    fn rejects_declared_counts_too_large_for_payload() {
+        let mut bytes = Vec::from(*b"MUBC");
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+
+        let error = decode_bytecode_module(&bytes).expect_err("decode error");
+
+        assert!(error.message.contains("declared globals count"));
     }
 }

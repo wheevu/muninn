@@ -2,10 +2,10 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use muninn::Value;
 use muninn::bytecode::{BytecodeModule, Chunk, Constant, FunctionBytecode, OpCode};
 use muninn::span::Span;
 use muninn::vm::Vm;
-use muninn::Value;
 
 struct CountingAllocator;
 

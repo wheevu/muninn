@@ -11,9 +11,7 @@ pub fn markdown_for_symbol(symbol: &Symbol) -> String {
 
     format!(
         "```muninn\n{}\n```\n\n{} `{}`",
-        symbol.detail,
-        kind,
-        symbol.name,
+        symbol.detail, kind, symbol.name,
     )
 }
 

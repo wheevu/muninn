@@ -1,4 +1,7 @@
-use muninn::{compile_to_bytecode, vm::{ReloadStatus, Vm}};
+use muninn::{
+    compile_to_bytecode,
+    vm::{ReloadStatus, Vm},
+};
 
 #[test]
 fn reload_swaps_module_and_preserves_globals_at_safe_point() {

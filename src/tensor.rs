@@ -3,6 +3,8 @@ use std::sync::Arc;
 use crate::runtime::{VmError, VmResult};
 use crate::span::Span;
 
+const MAX_TENSOR_ELEMENTS: usize = 10_000_000;
+
 #[derive(Debug, Clone)]
 pub struct Tensor {
     shape: Vec<usize>,
@@ -10,24 +12,24 @@ pub struct Tensor {
 }
 
 impl Tensor {
-    pub fn zeros(shape: Vec<usize>) -> Self {
-        let len = element_count(&shape);
-        Self {
+    pub fn zeros(shape: Vec<usize>, span: Span) -> VmResult<Self> {
+        let len = element_count(&shape, span)?;
+        Ok(Self {
             shape,
             data: vec![0.0; len],
-        }
+        })
     }
 
-    pub fn filled(shape: Vec<usize>, value: f64) -> Self {
-        let len = element_count(&shape);
-        Self {
+    pub fn filled(shape: Vec<usize>, value: f64, span: Span) -> VmResult<Self> {
+        let len = element_count(&shape, span)?;
+        Ok(Self {
             shape,
             data: vec![value; len],
-        }
+        })
     }
 
     pub fn reshape(&self, shape: Vec<usize>, span: Span) -> VmResult<Self> {
-        let expected = element_count(&shape);
+        let expected = element_count(&shape, span)?;
         if expected != self.data.len() {
             return Err(VmError::new(
                 format!(
@@ -77,10 +79,10 @@ pub fn tensor_binary(
     op: impl Fn(f64, f64) -> f64,
 ) -> VmResult<Tensor> {
     let shape = broadcast_shape(left.shape(), right.shape(), span, op_name)?;
-    let result_len = element_count(&shape);
-    let left_strides = strides(left.shape());
-    let right_strides = strides(right.shape());
-    let result_strides = strides(&shape);
+    let result_len = element_count(&shape, span)?;
+    let left_strides = strides(left.shape(), span)?;
+    let right_strides = strides(right.shape(), span)?;
+    let result_strides = strides(&shape, span)?;
 
     let mut data = Vec::with_capacity(result_len);
     for linear in 0..result_len {
@@ -93,22 +95,14 @@ pub fn tensor_binary(
     Ok(Tensor { shape, data })
 }
 
-pub fn tensor_scalar_binary(
-    tensor: &Tensor,
-    scalar: f64,
-    op: impl Fn(f64, f64) -> f64,
-) -> Tensor {
+pub fn tensor_scalar_binary(tensor: &Tensor, scalar: f64, op: impl Fn(f64, f64) -> f64) -> Tensor {
     Tensor {
         shape: tensor.shape.clone(),
         data: tensor.data.iter().map(|value| op(*value, scalar)).collect(),
     }
 }
 
-pub fn scalar_tensor_binary(
-    scalar: f64,
-    tensor: &Tensor,
-    op: impl Fn(f64, f64) -> f64,
-) -> Tensor {
+pub fn scalar_tensor_binary(scalar: f64, tensor: &Tensor, op: impl Fn(f64, f64) -> f64) -> Tensor {
     Tensor {
         shape: tensor.shape.clone(),
         data: tensor.data.iter().map(|value| op(scalar, *value)).collect(),
@@ -136,7 +130,20 @@ pub fn matmul(left: &Tensor, right: &Tensor, span: Span) -> VmResult<Tensor> {
         ));
     }
 
-    let mut data = vec![0.0; m * n];
+    let result_len = m
+        .checked_mul(n)
+        .ok_or_else(|| VmError::new("tensor_matmul result shape is too large", span))?;
+    if result_len > MAX_TENSOR_ELEMENTS {
+        return Err(VmError::new(
+            format!(
+                "tensor_matmul result has {} elements, maximum is {}",
+                result_len, MAX_TENSOR_ELEMENTS
+            ),
+            span,
+        ));
+    }
+
+    let mut data = vec![0.0; result_len];
     for row in 0..m {
         for col in 0..n {
             let mut sum = 0.0;
@@ -163,18 +170,8 @@ fn broadcast_shape(
     let mut shape = Vec::with_capacity(rank);
 
     for index in 0..rank {
-        let left_dim = left
-            .iter()
-            .rev()
-            .nth(index)
-            .copied()
-            .unwrap_or(1);
-        let right_dim = right
-            .iter()
-            .rev()
-            .nth(index)
-            .copied()
-            .unwrap_or(1);
+        let left_dim = left.iter().rev().nth(index).copied().unwrap_or(1);
+        let right_dim = right.iter().rev().nth(index).copied().unwrap_or(1);
         let dim = if left_dim == right_dim {
             left_dim
         } else if left_dim == 1 {
@@ -199,12 +196,14 @@ fn broadcast_shape(
     Ok(shape)
 }
 
-fn strides(shape: &[usize]) -> Vec<usize> {
-    let mut strides = vec![1; shape.len()];
+fn strides(shape: &[usize], span: Span) -> VmResult<Vec<usize>> {
+    let mut strides = vec![1usize; shape.len()];
     for index in (1..shape.len()).rev() {
-        strides[index - 1] = strides[index] * shape[index];
+        strides[index - 1] = strides[index]
+            .checked_mul(shape[index])
+            .ok_or_else(|| VmError::new("tensor shape is too large", span))?;
     }
-    strides
+    Ok(strides)
 }
 
 fn unravel_index(linear: usize, shape: &[usize], strides: &[usize]) -> Vec<usize> {
@@ -240,8 +239,22 @@ fn broadcast_index(
     linear
 }
 
-fn element_count(shape: &[usize]) -> usize {
-    shape.iter().copied().product::<usize>().max(1)
+fn element_count(shape: &[usize], span: Span) -> VmResult<usize> {
+    let count = shape.iter().try_fold(1usize, |total, dim| {
+        total
+            .checked_mul(*dim)
+            .ok_or_else(|| VmError::new("tensor shape is too large", span))
+    })?;
+    if count > MAX_TENSOR_ELEMENTS {
+        return Err(VmError::new(
+            format!(
+                "tensor has {} elements, maximum is {}",
+                count, MAX_TENSOR_ELEMENTS
+            ),
+            span,
+        ));
+    }
+    Ok(count.max(1))
 }
 
 pub fn format_shape(shape: &[usize]) -> String {
@@ -260,8 +273,8 @@ mod tests {
 
     #[test]
     fn broadcasts_trailing_dimensions() {
-        let left = Tensor::filled(vec![2, 1], 2.0);
-        let right = Tensor::filled(vec![1, 3], 3.0);
+        let left = Tensor::filled(vec![2, 1], 2.0, Span::default()).expect("left");
+        let right = Tensor::filled(vec![1, 3], 3.0, Span::default()).expect("right");
         let result = tensor_binary(&left, &right, Span::default(), "add", |a, b| a + b)
             .expect("broadcast result");
 
@@ -283,5 +296,19 @@ mod tests {
         let result = matmul(&left, &right, Span::default()).expect("matmul");
         assert_eq!(result.shape(), &[2, 2]);
         assert_eq!(result.data(), &[19.0, 22.0, 43.0, 50.0]);
+    }
+
+    #[test]
+    fn rejects_tensor_shapes_above_element_limit() {
+        let error = Tensor::zeros(vec![10_000_001], Span::default()).expect_err("too large");
+
+        assert!(error.message.contains("maximum is 10000000"));
+    }
+
+    #[test]
+    fn rejects_tensor_shape_product_overflow() {
+        let error = Tensor::zeros(vec![usize::MAX, 2], Span::default()).expect_err("overflow");
+
+        assert!(error.message.contains("tensor shape is too large"));
     }
 }

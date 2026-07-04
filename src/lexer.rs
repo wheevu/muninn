@@ -331,12 +331,16 @@ mod tests {
             .lex()
             .expect("tokens");
         assert!(matches!(tokens[0].kind, TokenKind::Fn));
-        assert!(tokens
-            .iter()
-            .any(|token| matches!(token.kind, TokenKind::TypeVoid)));
-        assert!(tokens
-            .iter()
-            .any(|token| matches!(token.kind, TokenKind::TypeInt)));
+        assert!(
+            tokens
+                .iter()
+                .any(|token| matches!(token.kind, TokenKind::TypeVoid))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|token| matches!(token.kind, TokenKind::TypeInt))
+        );
     }
 
     #[test]
@@ -356,8 +360,10 @@ mod tests {
         let errors = Lexer::new("let x: Int = 9223372036854775808;")
             .lex()
             .expect_err("lexer error");
-        assert!(errors
-            .iter()
-            .any(|error| error.message.contains("invalid integer literal")));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("invalid integer literal"))
+        );
     }
 }

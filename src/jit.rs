@@ -225,7 +225,7 @@ impl Trace {
             }
         }
 
-        if !matches!(ops.last(), Some(TraceOp::Loop { .. })) {
+        if !matches!(ops.last(), Some(TraceOp::Loop)) {
             return Err(TraceBuildError);
         }
 
@@ -653,7 +653,11 @@ impl NativeTrace {
         let code = module.get_finalized_function(id);
         // SAFETY: Cranelift emitted code for the exact `extern "C" fn(*mut NativeTraceState) -> i32`
         // signature declared above, and the owning JITModule is stored in NativeTrace so the code stays alive.
-        let function = unsafe { std::mem::transmute(code) };
+        let function = unsafe {
+            std::mem::transmute::<*const u8, unsafe extern "C" fn(*mut NativeTraceState) -> i32>(
+                code,
+            )
+        };
         Ok(Self {
             _jit: module,
             function,

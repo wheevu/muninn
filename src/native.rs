@@ -275,7 +275,10 @@ fn native_print(ctx: NativeCallContext<'_>) -> VmResult<Value> {
 
 fn native_assert(ctx: NativeCallContext<'_>) -> VmResult<Value> {
     if ctx.args().len() != 1 {
-        return Err(VmError::new("assert expects exactly 1 argument", ctx.span()));
+        return Err(VmError::new(
+            "assert expects exactly 1 argument",
+            ctx.span(),
+        ));
     }
     match ctx.expect_bool(0, "condition")? {
         true => Ok(Value::Nil),
@@ -285,13 +288,17 @@ fn native_assert(ctx: NativeCallContext<'_>) -> VmResult<Value> {
 
 fn native_tensor_zeros(ctx: NativeCallContext<'_>) -> VmResult<Value> {
     let shape = expect_shape(ctx)?;
-    Ok(Value::Tensor(arc_tensor(Tensor::zeros(shape))))
+    Ok(Value::Tensor(arc_tensor(Tensor::zeros(shape, ctx.span())?)))
 }
 
 fn native_tensor_fill(ctx: NativeCallContext<'_>) -> VmResult<Value> {
     let (shape, fill_index) = expect_shape_with_tail(ctx)?;
     let value = ctx.expect_float(fill_index, "value")?;
-    Ok(Value::Tensor(arc_tensor(Tensor::filled(shape, value))))
+    Ok(Value::Tensor(arc_tensor(Tensor::filled(
+        shape,
+        value,
+        ctx.span(),
+    )?)))
 }
 
 fn native_tensor_reshape(ctx: NativeCallContext<'_>) -> VmResult<Value> {
@@ -310,7 +317,9 @@ fn native_tensor_reshape(ctx: NativeCallContext<'_>) -> VmResult<Value> {
             positive_dim(ctx.expect_int(2, "cols")?, ctx.span())?,
         ]
     };
-    Ok(Value::Tensor(arc_tensor(tensor.reshape(shape, ctx.span())?)))
+    Ok(Value::Tensor(arc_tensor(
+        tensor.reshape(shape, ctx.span())?,
+    )))
 }
 
 fn native_tensor_matmul(ctx: NativeCallContext<'_>) -> VmResult<Value> {
@@ -322,7 +331,11 @@ fn native_tensor_matmul(ctx: NativeCallContext<'_>) -> VmResult<Value> {
     }
     let left = ctx.expect_tensor(0, "left")?;
     let right = ctx.expect_tensor(1, "right")?;
-    Ok(Value::Tensor(arc_tensor(matmul(&left, &right, ctx.span())?)))
+    Ok(Value::Tensor(arc_tensor(matmul(
+        &left,
+        &right,
+        ctx.span(),
+    )?)))
 }
 
 fn native_tensor_sum(ctx: NativeCallContext<'_>) -> VmResult<Value> {
@@ -373,10 +386,11 @@ pub fn add_values(left: Value, right: Value, span: Span) -> VmResult<Value> {
 
 pub fn subtract_values(left: Value, right: Value, span: Span) -> VmResult<Value> {
     match (left, right) {
-        (Value::Int(left), Value::Int(right)) => Ok(Value::Int(
-            left.checked_sub(right)
-                .ok_or_else(|| VmError::new("integer overflow in subtraction", span))?,
-        )),
+        (Value::Int(left), Value::Int(right)) => {
+            Ok(Value::Int(left.checked_sub(right).ok_or_else(|| {
+                VmError::new("integer overflow in subtraction", span)
+            })?))
+        }
         (Value::Float(left), Value::Float(right)) => Ok(Value::Float(left - right)),
         (Value::Tensor(left), Value::Tensor(right)) => Ok(Value::Tensor(arc_tensor(
             tensor_binary(&left, &right, span, "tensor subtract", |a, b| a - b)?,
@@ -400,10 +414,11 @@ pub fn subtract_values(left: Value, right: Value, span: Span) -> VmResult<Value>
 
 pub fn multiply_values(left: Value, right: Value, span: Span) -> VmResult<Value> {
     match (left, right) {
-        (Value::Int(left), Value::Int(right)) => Ok(Value::Int(
-            left.checked_mul(right)
-                .ok_or_else(|| VmError::new("integer overflow in multiplication", span))?,
-        )),
+        (Value::Int(left), Value::Int(right)) => {
+            Ok(Value::Int(left.checked_mul(right).ok_or_else(|| {
+                VmError::new("integer overflow in multiplication", span)
+            })?))
+        }
         (Value::Float(left), Value::Float(right)) => Ok(Value::Float(left * right)),
         (Value::Tensor(left), Value::Tensor(right)) => Ok(Value::Tensor(arc_tensor(
             tensor_binary(&left, &right, span, "tensor multiply", |a, b| a * b)?,
@@ -431,10 +446,9 @@ pub fn divide_values(left: Value, right: Value, span: Span) -> VmResult<Value> {
             if right == 0 {
                 return Err(VmError::new("division by zero", span));
             }
-            Ok(Value::Int(
-                left.checked_div(right)
-                    .ok_or_else(|| VmError::new("integer overflow in division", span))?,
-            ))
+            Ok(Value::Int(left.checked_div(right).ok_or_else(|| {
+                VmError::new("integer overflow in division", span)
+            })?))
         }
         (Value::Float(left), Value::Float(right)) => Ok(Value::Float(left / right)),
         (Value::Tensor(left), Value::Tensor(right)) => Ok(Value::Tensor(arc_tensor(
@@ -498,7 +512,12 @@ fn positive_dim(value: i64, span: Span) -> VmResult<usize> {
             span,
         ));
     }
-    Ok(value as usize)
+    usize::try_from(value).map_err(|_| {
+        VmError::new(
+            format!("tensor dimension is too large, got {}", value),
+            span,
+        )
+    })
 }
 
 pub fn format_native_overload(name: &str, args: &[NativeType]) -> String {

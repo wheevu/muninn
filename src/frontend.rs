@@ -3,7 +3,7 @@ use crate::error::MuninnError;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::token::Token;
-use crate::typecheck::{analyze_program, check_program, Reference, SemanticModel, Symbol};
+use crate::typecheck::{Reference, SemanticModel, Symbol, analyze_program, check_program};
 
 #[derive(Debug, Clone, Default)]
 pub struct FrontendAnalysis {

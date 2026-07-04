@@ -8,10 +8,12 @@ let x: Int = 2;
 "#;
 
     let analysis = analyze_document(source);
-    assert!(analysis
-        .diagnostics
-        .iter()
-        .any(|error| error.message.contains("already defined in this scope")));
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|error| error.message.contains("already defined in this scope"))
+    );
 }
 
 #[test]
@@ -36,10 +38,12 @@ let print: Int = 1;
 "#;
 
     let analysis = analyze_document(source);
-    assert!(analysis
-        .diagnostics
-        .iter()
-        .any(|error| error.message.contains("already defined in this scope")));
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|error| error.message.contains("already defined in this scope"))
+    );
 }
 
 #[test]
@@ -70,10 +74,12 @@ bad(1, 2);
 "#;
 
     let analysis = analyze_document(source);
-    assert!(analysis
-        .diagnostics
-        .iter()
-        .any(|error| error.message.contains("already defined in this scope")));
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|error| error.message.contains("already defined in this scope"))
+    );
 }
 
 #[test]
@@ -102,10 +108,12 @@ value = 3;
 "#;
 
     let analysis = analyze_document(source);
-    assert!(analysis
-        .diagnostics
-        .iter()
-        .any(|error| error.message.contains("cannot assign to 'value'")));
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|error| error.message.contains("cannot assign to 'value'"))
+    );
 }
 
 #[test]
@@ -115,8 +123,10 @@ print = 1;
 "#;
 
     let analysis = analyze_document(source);
-    assert!(analysis
-        .diagnostics
-        .iter()
-        .any(|error| error.message.contains("cannot assign to 'print'")));
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|error| error.message.contains("cannot assign to 'print'"))
+    );
 }

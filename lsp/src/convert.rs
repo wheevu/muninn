@@ -5,11 +5,8 @@ use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url}
 
 pub fn span_to_range(source: &str, line_starts: &[usize], span: Span) -> Range {
     let (start_line, start_character) = offset_to_utf16_position(source, line_starts, span.offset);
-    let (mut end_line, mut end_character) = offset_to_utf16_position(
-        source,
-        line_starts,
-        span.end_offset.max(span.offset + 1),
-    );
+    let (mut end_line, mut end_character) =
+        offset_to_utf16_position(source, line_starts, span.end_offset.max(span.offset + 1));
 
     if end_line < start_line || (end_line == start_line && end_character < start_character) {
         end_line = start_line;

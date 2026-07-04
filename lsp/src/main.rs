@@ -22,7 +22,12 @@ struct Backend {
 impl Backend {
     async fn update_document(&self, uri: Url, version: i32, source: String) {
         let analysis = analyze_document(&source);
-        let diagnostics = errors_to_diagnostics(&source, &muninn::source::compute_line_starts(&source), &uri, &analysis.diagnostics);
+        let diagnostics = errors_to_diagnostics(
+            &source,
+            &muninn::source::compute_line_starts(&source),
+            &uri,
+            &analysis.diagnostics,
+        );
         let document = Arc::new(DocumentState::new(version, source, analysis));
         {
             let mut state = self.state.write().await;
@@ -33,7 +38,9 @@ impl Backend {
             }
             state.docs.insert(uri.clone(), document);
         }
-        self.client.publish_diagnostics(uri, diagnostics, None).await;
+        self.client
+            .publish_diagnostics(uri, diagnostics, None)
+            .await;
     }
 
     async fn document(&self, uri: &Url) -> Option<Arc<DocumentState>> {
@@ -91,7 +98,10 @@ impl LanguageServer for Backend {
         let source = if let Some(current) = current {
             apply_content_changes(&current.source, &params.content_changes)
         } else {
-            params.content_changes.first().map(|change| change.text.clone())
+            params
+                .content_changes
+                .first()
+                .map(|change| change.text.clone())
         };
         let Some(source) = source else {
             self.client
@@ -103,7 +113,11 @@ impl LanguageServer for Backend {
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        self.state.write().await.docs.remove(&params.text_document.uri);
+        self.state
+            .write()
+            .await
+            .docs
+            .remove(&params.text_document.uri);
         self.client
             .publish_diagnostics(params.text_document.uri, Vec::new(), None)
             .await;
@@ -124,7 +138,11 @@ impl LanguageServer for Backend {
         Ok(Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: format!("{}\n\n{}", markdown_for_symbol(symbol), detail_for_symbol(symbol)),
+                value: format!(
+                    "{}\n\n{}",
+                    markdown_for_symbol(symbol),
+                    detail_for_symbol(symbol)
+                ),
             }),
             range: Some(span_to_range(&doc.source, &doc.line_starts, symbol.span)),
         }))
@@ -172,13 +190,13 @@ mod tests {
 
     #[test]
     fn resolves_definition_for_function_call_site() {
-        let source = "fn add(a: Int, b: Int) -> Int { return a + b; }\nlet value: Int = add(1, 2);\n";
+        let source =
+            "fn add(a: Int, b: Int) -> Int { return a + b; }\nlet value: Int = add(1, 2);\n";
         let analysis = analyze_document(source);
         let doc = DocumentState::new(1, source.to_string(), analysis);
 
         let call_offset = source.find("add(1, 2)").expect("call offset");
-        let (line, character) =
-            offset_to_utf16_position(source, &doc.line_starts, call_offset);
+        let (line, character) = offset_to_utf16_position(source, &doc.line_starts, call_offset);
         let resolved_offset = doc.offset_at(line, character).expect("resolved offset");
         let semantics = doc.analysis.semantics.as_ref().expect("semantics");
         let symbol = semantics
@@ -212,8 +230,7 @@ mod tests {
         let analysis = analyze_document(source);
         let doc = DocumentState::new(1, source.to_string(), analysis);
         let symbol_offset = source.find("bird);\n").expect("bird call");
-        let (line, character) =
-            offset_to_utf16_position(source, &doc.line_starts, symbol_offset);
+        let (line, character) = offset_to_utf16_position(source, &doc.line_starts, symbol_offset);
         let round_trip = doc.offset_at(line, character).expect("offset");
         assert_eq!(round_trip, symbol_offset);
         let semantics = doc.analysis.semantics.as_ref().expect("semantics");

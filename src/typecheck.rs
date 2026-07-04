@@ -589,7 +589,9 @@ impl Analyzer {
             other => {
                 let native_hint = if let ExprKind::Variable(name) = &callee.kind {
                     native_by_name(name)
-                        .map(|native| format!(" (did you mean native function '{}'? )", native.name))
+                        .map(|native| {
+                            format!(" (did you mean native function '{}'? )", native.name)
+                        })
                         .unwrap_or_default()
                 } else {
                     String::new()
@@ -654,7 +656,10 @@ impl Analyzer {
 
         for (index, actual) in arg_types.iter().enumerate() {
             let expected = expected_native_types(&matching_arity, index);
-            if !expected.iter().any(|ty| native_type_matches_ty(*ty, actual)) {
+            if !expected
+                .iter()
+                .any(|ty| native_type_matches_ty(*ty, actual))
+            {
                 let expected = expected
                     .iter()
                     .map(|ty| native_type_name(*ty).to_string())
@@ -727,9 +732,7 @@ impl Analyzer {
     fn is_tensor_numeric_pair(&self, left: &Ty, right: &Ty) -> bool {
         matches!(
             (left, right),
-            (Ty::Tensor, Ty::Tensor)
-                | (Ty::Tensor, Ty::Float)
-                | (Ty::Float, Ty::Tensor)
+            (Ty::Tensor, Ty::Tensor) | (Ty::Tensor, Ty::Float) | (Ty::Float, Ty::Tensor)
         )
     }
 
@@ -948,20 +951,23 @@ mod tests {
         )
         .expect("program");
         let model = analyze_program(&program);
-        assert!(model
-            .diagnostics
-            .iter()
-            .any(|error| error.message.contains("may fall through without returning Int")));
+        assert!(model.diagnostics.iter().any(|error| {
+            error
+                .message
+                .contains("may fall through without returning Int")
+        }));
     }
 
     #[test]
     fn validates_assert_native_argument_type() {
         let program = parse_document("assert(1);").expect("program");
         let model = analyze_program(&program);
-        assert!(model
-            .diagnostics
-            .iter()
-            .any(|error| error.message.contains("assert argument 0 expects Bool")));
+        assert!(
+            model
+                .diagnostics
+                .iter()
+                .any(|error| error.message.contains("assert argument 0 expects Bool"))
+        );
     }
 
     #[test]
@@ -969,19 +975,22 @@ mod tests {
         let program =
             parse_document("fn main() -> Int { return 1; let x: Int = 2; }").expect("program");
         let model = analyze_program(&program);
-        assert!(model
-            .diagnostics
-            .iter()
-            .any(|error| error.message == "unreachable statement"));
+        assert!(
+            model
+                .diagnostics
+                .iter()
+                .any(|error| error.message == "unreachable statement")
+        );
     }
 
     #[test]
     fn checks_if_expression_branch_types() {
         let program = parse_document("let x = if (true) { 1 } else { 2.0 };").expect("program");
         let model = analyze_program(&program);
-        assert!(model
-            .diagnostics
-            .iter()
-            .any(|error| error.message.contains("if expression branches must return the same type")));
+        assert!(model.diagnostics.iter().any(|error| {
+            error
+                .message
+                .contains("if expression branches must return the same type")
+        }));
     }
 }

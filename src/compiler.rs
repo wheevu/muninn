@@ -3,11 +3,12 @@ use std::collections::HashMap;
 use crate::ast::{
     BinaryOp, Block, Expr, ExprKind, FunctionDecl, Program, Stmt, StmtKind, TypeExpr, UnaryOp,
 };
-use crate::bytecode::{
-    BytecodeModule, Chunk, Constant, FunctionBytecode, OpCode, validate_module,
-};
+use crate::bytecode::{BytecodeModule, Chunk, Constant, FunctionBytecode, OpCode, validate_module};
 use crate::error::MuninnError;
 use crate::span::Span;
+
+const MAX_CALL_ARGS: usize = u8::MAX as usize;
+const MAX_LOCAL_SLOT: usize = u16::MAX as usize;
 
 pub fn compile_program(program: &Program) -> Result<BytecodeModule, Vec<MuninnError>> {
     let mut compiler = ModuleCompiler::new();
@@ -31,7 +32,9 @@ impl ModuleCompiler {
     }
 
     fn finish(mut self) -> Result<BytecodeModule, Vec<MuninnError>> {
-        if self.errors.is_empty() && let Err(mut validation_errors) = validate_module(&self.module) {
+        if self.errors.is_empty()
+            && let Err(mut validation_errors) = validate_module(&self.module)
+        {
             self.errors.append(&mut validation_errors);
         }
 
@@ -56,10 +59,14 @@ impl ModuleCompiler {
                 let Some(function_id) = self.function_ids.get(&function.name).copied() else {
                     continue;
                 };
-                if let Err(error) = entry.emit_constant(Constant::Function(function_id), function.span) {
+                if let Err(error) =
+                    entry.emit_constant(Constant::Function(function_id), function.span)
+                {
                     self.errors.push(error);
                 }
-                if let Err(error) = entry.emit_named_op(OpCode::DefineGlobal, &function.name, function.span) {
+                if let Err(error) =
+                    entry.emit_named_op(OpCode::DefineGlobal, &function.name, function.span)
+                {
                     self.errors.push(error);
                 }
             }
@@ -86,6 +93,17 @@ impl ModuleCompiler {
     }
 
     fn compile_function(&mut self, function: &FunctionDecl) -> usize {
+        if function.params.len() > MAX_CALL_ARGS {
+            self.errors.push(MuninnError::new(
+                "compiler",
+                format!(
+                    "function '{}' has too many parameters: maximum is {}",
+                    function.name, MAX_CALL_ARGS
+                ),
+                function.name_span,
+            ));
+        }
+
         let expects_return_value = function.return_type != TypeExpr::Void;
         let mut compiler = FunctionCompiler::new(
             function.name.clone(),
@@ -94,7 +112,9 @@ impl ModuleCompiler {
             false,
         );
         for param in &function.params {
-            compiler.define_parameter(param.name.clone());
+            if let Err(error) = compiler.define_parameter(param.name.clone(), param.span) {
+                self.errors.push(error);
+            }
         }
         self.compile_block(&mut compiler, &function.body, false);
         compiler.emit_op(OpCode::Nil, function.span);
@@ -111,17 +131,22 @@ impl ModuleCompiler {
         match &stmt.kind {
             StmtKind::Let {
                 name,
+                name_span,
                 initializer,
                 ..
             } => {
                 self.compile_expr(compiler, initializer);
                 if compiler.is_entry && compiler.scope_depth == 0 {
-                    if let Err(error) = compiler.emit_named_op(OpCode::DefineGlobal, name, stmt.span) {
+                    if let Err(error) =
+                        compiler.emit_named_op(OpCode::DefineGlobal, name, stmt.span)
+                    {
                         self.errors.push(error);
                     }
                 } else {
-                    let slot = compiler.define_local(name.clone());
-                    compiler.emit_slot_op(OpCode::SetLocal, slot, stmt.span);
+                    match compiler.define_local(name.clone(), *name_span) {
+                        Ok(slot) => compiler.emit_slot_op(OpCode::SetLocal, slot, stmt.span),
+                        Err(error) => self.errors.push(error),
+                    }
                 }
             }
             StmtKind::Function(_) => {}
@@ -139,7 +164,7 @@ impl ModuleCompiler {
                 let exit_jump = compiler.emit_jump(OpCode::JumpIfFalse, stmt.span);
                 compiler.emit_op(OpCode::Pop, stmt.span);
                 self.compile_block(compiler, body, false);
-                compiler.emit_loop(loop_start, stmt.span);
+                compiler.emit_loop(loop_start, stmt.span, &mut self.errors);
                 compiler.patch_jump(exit_jump, stmt.span, &mut self.errors);
                 compiler.emit_op(OpCode::Pop, stmt.span);
             }
@@ -152,7 +177,9 @@ impl ModuleCompiler {
                 let else_jump = compiler.emit_jump(OpCode::JumpIfFalse, stmt.span);
                 compiler.emit_op(OpCode::Pop, stmt.span);
                 self.compile_block(compiler, then_branch, false);
-                let end_jump = else_branch.as_ref().map(|_| compiler.emit_jump(OpCode::Jump, stmt.span));
+                let end_jump = else_branch
+                    .as_ref()
+                    .map(|_| compiler.emit_jump(OpCode::Jump, stmt.span));
                 compiler.patch_jump(else_jump, stmt.span, &mut self.errors);
                 compiler.emit_op(OpCode::Pop, stmt.span);
                 if let Some(else_branch) = else_branch {
@@ -166,7 +193,9 @@ impl ModuleCompiler {
                 self.compile_expr(compiler, value);
                 if let Some(slot) = compiler.resolve_local(name) {
                     compiler.emit_slot_op(OpCode::SetLocal, slot, stmt.span);
-                } else if let Err(error) = compiler.emit_named_op(OpCode::SetGlobal, name, stmt.span) {
+                } else if let Err(error) =
+                    compiler.emit_named_op(OpCode::SetGlobal, name, stmt.span)
+                {
                     self.errors.push(error);
                 }
             }
@@ -193,14 +222,18 @@ impl ModuleCompiler {
                 compiler.emit_op(if *value { OpCode::True } else { OpCode::False }, expr.span);
             }
             ExprKind::String(value) => {
-                if let Err(error) = compiler.emit_constant(Constant::String(value.clone()), expr.span) {
+                if let Err(error) =
+                    compiler.emit_constant(Constant::String(value.clone()), expr.span)
+                {
                     self.errors.push(error);
                 }
             }
             ExprKind::Variable(name) => {
                 if let Some(slot) = compiler.resolve_local(name) {
                     compiler.emit_slot_op(OpCode::GetLocal, slot, expr.span);
-                } else if let Err(error) = compiler.emit_named_op(OpCode::GetGlobal, name, expr.span) {
+                } else if let Err(error) =
+                    compiler.emit_named_op(OpCode::GetGlobal, name, expr.span)
+                {
                     self.errors.push(error);
                 }
             }
@@ -269,6 +302,14 @@ impl ModuleCompiler {
                 }
             },
             ExprKind::Call { callee, args } => {
+                if args.len() > MAX_CALL_ARGS {
+                    self.errors.push(MuninnError::new(
+                        "compiler",
+                        format!("call has too many arguments: maximum is {}", MAX_CALL_ARGS),
+                        expr.span,
+                    ));
+                    return;
+                }
                 self.compile_expr(compiler, callee);
                 for arg in args {
                     self.compile_expr(compiler, arg);
@@ -360,7 +401,14 @@ impl FunctionCompiler {
         }
     }
 
-    fn define_parameter(&mut self, name: String) {
+    fn define_parameter(&mut self, name: String, span: Span) -> Result<(), MuninnError> {
+        if self.next_slot > MAX_LOCAL_SLOT {
+            return Err(MuninnError::new(
+                "compiler",
+                format!("too many local slots: maximum is {}", MAX_LOCAL_SLOT + 1),
+                span,
+            ));
+        }
         let slot = self.next_slot;
         self.next_slot += 1;
         self.max_slot = self.max_slot.max(self.next_slot);
@@ -369,9 +417,17 @@ impl FunctionCompiler {
             depth: 0,
             slot,
         });
+        Ok(())
     }
 
-    fn define_local(&mut self, name: String) -> usize {
+    fn define_local(&mut self, name: String, span: Span) -> Result<usize, MuninnError> {
+        if self.next_slot > MAX_LOCAL_SLOT {
+            return Err(MuninnError::new(
+                "compiler",
+                format!("too many local slots: maximum is {}", MAX_LOCAL_SLOT + 1),
+                span,
+            ));
+        }
         let slot = self.next_slot;
         self.next_slot += 1;
         self.max_slot = self.max_slot.max(self.next_slot);
@@ -380,7 +436,7 @@ impl FunctionCompiler {
             depth: self.scope_depth,
             slot,
         });
-        slot
+        Ok(slot)
     }
 
     fn resolve_local(&self, name: &str) -> Option<usize> {
@@ -457,11 +513,7 @@ impl FunctionCompiler {
     fn patch_jump(&mut self, patch_at: usize, span: Span, errors: &mut Vec<MuninnError>) {
         let jump = self.current_offset().saturating_sub(patch_at + 2);
         if jump > u16::MAX as usize {
-            errors.push(MuninnError::new(
-                "compiler",
-                "jump offset overflow",
-                span,
-            ));
+            errors.push(MuninnError::new("compiler", "jump offset overflow", span));
             return;
         }
         let bytes = (jump as u16).to_le_bytes();
@@ -469,9 +521,113 @@ impl FunctionCompiler {
         self.chunk.code[patch_at + 1] = bytes[1];
     }
 
-    fn emit_loop(&mut self, loop_start: usize, span: Span) {
+    fn emit_loop(&mut self, loop_start: usize, span: Span, errors: &mut Vec<MuninnError>) {
         self.emit_op(OpCode::Loop, span);
         let jump = self.current_offset().saturating_sub(loop_start) + 2;
+        if jump > u16::MAX as usize {
+            errors.push(MuninnError::new(
+                "compiler",
+                "loop jump offset overflow",
+                span,
+            ));
+            self.emit_u16(u16::MAX, span);
+            return;
+        }
         self.emit_u16(jump as u16, span);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FunctionCompiler, MAX_CALL_ARGS, MAX_LOCAL_SLOT, ModuleCompiler};
+    use crate::ast::{Expr, ExprKind, NodeId};
+    use crate::parser::Parser;
+    use crate::{lexer::Lexer, span::Span};
+
+    #[test]
+    fn rejects_calls_with_more_than_u8_arguments() {
+        let args = (0..=MAX_CALL_ARGS)
+            .map(|index| Expr {
+                id: NodeId(index as u32),
+                kind: ExprKind::Int(index as i64),
+                span: Span::default(),
+            })
+            .collect::<Vec<_>>();
+        let call = Expr {
+            id: NodeId(999),
+            kind: ExprKind::Call {
+                callee: Box::new(Expr {
+                    id: NodeId(998),
+                    kind: ExprKind::Variable("f".to_string()),
+                    span: Span::default(),
+                }),
+                args,
+            },
+            span: Span::default(),
+        };
+
+        let mut module = ModuleCompiler::new();
+        let mut function = FunctionCompiler::new("test".to_string(), 0, false, false);
+        module.compile_expr(&mut function, &call);
+
+        assert!(
+            module
+                .errors
+                .iter()
+                .any(|error| error.message.contains("call has too many arguments"))
+        );
+    }
+
+    #[test]
+    fn rejects_local_slots_that_do_not_fit_in_bytecode_operand() {
+        let mut function = FunctionCompiler::new("test".to_string(), 0, false, false);
+        function.next_slot = MAX_LOCAL_SLOT + 1;
+
+        let error = function
+            .define_local("too_far".to_string(), Span::default())
+            .expect_err("local slot overflow");
+
+        assert!(error.message.contains("too many local slots"));
+    }
+
+    #[test]
+    fn rejects_loop_jumps_that_do_not_fit_in_bytecode_operand() {
+        let mut function = FunctionCompiler::new("test".to_string(), 0, false, false);
+        function.chunk.code.resize(u16::MAX as usize + 1, 0);
+        function
+            .chunk
+            .spans
+            .resize(u16::MAX as usize + 1, Span::default());
+        let mut errors = Vec::new();
+
+        function.emit_loop(0, Span::default(), &mut errors);
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("loop jump offset overflow"))
+        );
+    }
+
+    #[test]
+    fn rejects_functions_with_more_than_u8_parameters() {
+        let params = (0..=MAX_CALL_ARGS)
+            .map(|index| format!("p{index}: Int"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source = format!("fn wide({params}) -> Int {{ return 1; }} wide;");
+        let tokens = Lexer::new(&source).lex().expect("tokens");
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().expect("program");
+        let mut module = ModuleCompiler::new();
+
+        module.compile(&program);
+
+        assert!(
+            module
+                .errors
+                .iter()
+                .any(|error| error.message.contains("has too many parameters"))
+        );
     }
 }

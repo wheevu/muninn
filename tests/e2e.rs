@@ -38,9 +38,11 @@ let x: Int = true;
 
     let analysis = analyze_document(src);
     assert!(!analysis.diagnostics.is_empty());
-    assert!(analysis.diagnostics[0]
-        .message
-        .contains("expected initializer of type Int"));
+    assert!(
+        analysis.diagnostics[0]
+            .message
+            .contains("expected initializer of type Int")
+    );
 }
 
 #[test]
@@ -51,10 +53,12 @@ x = 2;
 "#;
 
     let analysis = analyze_document(src);
-    assert!(analysis
-        .diagnostics
-        .iter()
-        .any(|error| error.message.contains("not mutable")));
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|error| error.message.contains("not mutable"))
+    );
 }
 
 #[test]
@@ -71,9 +75,11 @@ x + 1;
 "#;
 
     let analysis = analyze_document(src);
-    assert!(analysis.diagnostics.iter().any(|error| error
-        .message
-        .contains("may fall through without returning Int")));
+    assert!(analysis.diagnostics.iter().any(|error| {
+        error
+            .message
+            .contains("may fall through without returning Int")
+    }));
 }
 
 #[test]
@@ -116,9 +122,11 @@ big * big;
 "#;
     let errors = compile_and_run(src).expect_err("runtime error");
     assert_eq!(errors[0].phase, "vm");
-    assert!(errors[0]
-        .message
-        .contains("integer overflow in multiplication"));
+    assert!(
+        errors[0]
+            .message
+            .contains("integer overflow in multiplication")
+    );
 }
 
 #[test]
@@ -169,4 +177,13 @@ left + right;
     assert_eq!(errors[0].phase, "vm");
     assert!(errors[0].message.contains("cannot be broadcast"));
     assert!(errors[0].span.line > 0);
+}
+
+#[test]
+fn rejects_tensor_allocation_above_runtime_limit() {
+    let src = "tensor_zeros(10000001);";
+    let errors = compile_and_run(src).expect_err("runtime error");
+
+    assert_eq!(errors[0].phase, "vm");
+    assert!(errors[0].message.contains("maximum is 10000000"));
 }

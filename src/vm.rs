@@ -147,9 +147,7 @@ impl Vm {
         }
 
         let pending = self.pending_reload.take().expect("pending reload");
-        if let Err(error) = self.validate_reload_compatibility(&pending) {
-            return Err(error);
-        }
+        self.validate_reload_compatibility(&pending)?;
 
         self.module = pending;
         self.invalidate_runtime_caches();
@@ -635,15 +633,15 @@ impl Vm {
 }
 
 fn value_matches_kind(value: &Value, kind: GlobalValueKind) -> bool {
-    match (value, kind) {
+    matches!(
+        (value, kind),
         (Value::Int(_), GlobalValueKind::Int)
-        | (Value::Float(_), GlobalValueKind::Float)
-        | (Value::Bool(_), GlobalValueKind::Bool)
-        | (Value::String(_), GlobalValueKind::String)
-        | (Value::Tensor(_), GlobalValueKind::Tensor)
-        | (Value::Function(_), GlobalValueKind::Function) => true,
-        _ => false,
-    }
+            | (Value::Float(_), GlobalValueKind::Float)
+            | (Value::Bool(_), GlobalValueKind::Bool)
+            | (Value::String(_), GlobalValueKind::String)
+            | (Value::Tensor(_), GlobalValueKind::Tensor)
+            | (Value::Function(_), GlobalValueKind::Function)
+    )
 }
 
 fn first_validation_error(errors: Vec<MuninnError>) -> VmError {

@@ -28,6 +28,9 @@ fn metrics_table() -> io::Result<String> {
     let euclid = example_size("examples/dsa_euclid.mun")?;
     let tensor = example_size("examples/tensor_pipeline.mun")?;
     let perceptron = example_size("examples/perceptron.mun")?;
+    let workspace_tests = count_workspace_tests()?;
+    let benchmark_targets = count_benchmark_targets()?;
+    let example_programs = count_example_programs()?;
     let compile_run = bench_compile_and_run(SCALAR_LOOP, 200);
     let vm_only = bench_vm_only(SCALAR_LOOP, 1_000);
     let tensor_source =
@@ -35,7 +38,10 @@ fn metrics_table() -> io::Result<String> {
     let tensor_run = bench_compile_and_run(&tensor_source, 200);
 
     Ok(format!(
-        "| metric | value |\n|---|---:|\n| workspace tests | 80 |\n| benchmark targets | 6 |\n| example programs | 3 |\n| `dsa_euclid.mun` source | {} |\n| `dsa_euclid.mun` bytecode | {} |\n| `tensor_pipeline.mun` source | {} |\n| `tensor_pipeline.mun` bytecode | {} |\n| `perceptron.mun` source | {} |\n| `perceptron.mun` bytecode | {} |\n| scalar loop compile + run | {} µs/op |\n| scalar loop VM only | {} µs/op |\n| tensor pipeline compile + run | {} µs/op |\n",
+        "| metric | value |\n|---|---:|\n| workspace tests | {} |\n| benchmark targets | {} |\n| example programs | {} |\n| `dsa_euclid.mun` source | {} |\n| `dsa_euclid.mun` bytecode | {} |\n| `tensor_pipeline.mun` source | {} |\n| `tensor_pipeline.mun` bytecode | {} |\n| `perceptron.mun` source | {} |\n| `perceptron.mun` bytecode | {} |\n| scalar loop compile + run | {} µs/op |\n| scalar loop VM only | {} µs/op |\n| tensor pipeline compile + run | {} µs/op |\n",
+        workspace_tests,
+        benchmark_targets,
+        example_programs,
         bytes(euclid.source_bytes),
         bytes(euclid.bytecode_bytes),
         bytes(tensor.source_bytes),
@@ -46,6 +52,54 @@ fn metrics_table() -> io::Result<String> {
         micros_per_op(vm_only, 1_000),
         micros_per_op(tensor_run, 200),
     ))
+}
+
+fn count_workspace_tests() -> io::Result<usize> {
+    let mut count = 0;
+    for root in ["src", "tests", "lsp/src"] {
+        for path in rust_files(root)? {
+            count += fs::read_to_string(path)?
+                .lines()
+                .filter(|line| line.trim() == "#[test]")
+                .count();
+        }
+    }
+    Ok(count)
+}
+
+fn count_benchmark_targets() -> io::Result<usize> {
+    let mut count = 0;
+    for path in rust_files("benches")? {
+        count += fs::read_to_string(path)?.matches("bench_function(").count();
+    }
+    Ok(count)
+}
+
+fn count_example_programs() -> io::Result<usize> {
+    Ok(fs::read_dir("examples")?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "mun")
+        })
+        .count())
+}
+
+fn rust_files(root: &str) -> io::Result<Vec<std::path::PathBuf>> {
+    let mut files = Vec::new();
+    let mut pending = vec![std::path::PathBuf::from(root)];
+    while let Some(path) = pending.pop() {
+        if path.is_dir() {
+            for entry in fs::read_dir(path)? {
+                pending.push(entry?.path());
+            }
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            files.push(path);
+        }
+    }
+    Ok(files)
 }
 
 fn example_size(path: &str) -> io::Result<ExampleSize> {
