@@ -22,6 +22,7 @@ pub struct Vm {
     module: BytecodeModule,
     globals: HashMap<String, Value>,
     global_cache: HashMap<String, CachedGlobal>,
+    global_cache_stats: GlobalCacheStats,
     globals_epoch: u64,
     stack: Vec<Value>,
     frames: Vec<CallFrame>,
@@ -35,6 +36,14 @@ pub struct Vm {
 pub struct VmOptions {
     pub jit_enabled: bool,
     pub hot_loop_threshold: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct GlobalCacheStats {
+    pub hits: usize,
+    pub misses: usize,
+    /// Number of globals epoch bumps. Includes bumps when the cache is already empty.
+    pub invalidations: usize,
 }
 
 impl Default for VmOptions {
@@ -68,6 +77,7 @@ impl Vm {
         let mut vm = Self {
             globals: HashMap::new(),
             global_cache: HashMap::new(),
+            global_cache_stats: GlobalCacheStats::default(),
             globals_epoch: 0,
             stack: Vec::new(),
             frames: Vec::new(),
@@ -89,6 +99,10 @@ impl Vm {
 
     pub fn jit_stats(&self) -> Option<TraceStats> {
         self.traces.as_ref().map(TraceEngine::stats)
+    }
+
+    pub fn global_cache_stats(&self) -> GlobalCacheStats {
+        self.global_cache_stats
     }
 
     pub fn reserve_runtime_capacity(&mut self, stack_capacity: usize, frame_capacity: usize) {
@@ -607,8 +621,11 @@ impl Vm {
         if let Some(cached) = self.global_cache.get(name)
             && cached.epoch == self.globals_epoch
         {
+            self.global_cache_stats.hits += 1;
             return Ok(cached.value.clone());
         }
+
+        self.global_cache_stats.misses += 1;
 
         let value = self
             .globals
@@ -627,7 +644,10 @@ impl Vm {
 
     fn bump_globals_epoch(&mut self) {
         self.globals_epoch = self.globals_epoch.wrapping_add(1);
-        self.global_cache.clear();
+        self.global_cache_stats.invalidations += 1;
+        if !self.global_cache.is_empty() {
+            self.global_cache.clear();
+        }
     }
 
     fn invalidate_runtime_caches(&mut self) {

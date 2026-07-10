@@ -26,6 +26,31 @@ fn hot_local_int_loop_compiles_and_matches_interpreter_result() {
     assert!(matches!(value, Value::Int(5)));
     assert_eq!(stats.traces_compiled, 1);
     assert!(stats.interpreted_trace_runs + stats.native_trace_runs > 0);
+
+    #[cfg(feature = "jit")]
+    assert!(
+        stats.native_trace_runs > 0,
+        "Cranelift native trace should execute when jit feature is enabled"
+    );
+}
+
+#[test]
+fn jit_matches_interpreter_for_normal_integer_loop() {
+    assert_jit_matches_interpreter(
+        r#"
+fn sum_to(limit: Int) -> Int {
+    let mut i: Int = 0;
+    let mut total: Int = 0;
+    while (i < limit) {
+        total = total + i;
+        i = i + 1;
+    }
+    return total;
+}
+
+sum_to(8);
+"#,
+    );
 }
 
 #[test]
@@ -86,7 +111,7 @@ crash();
 fn jit_preserves_integer_overflow_errors() {
     let source = r#"
 fn crash() -> Int {
-    let mut value: Int = 9223372036854775807;
+    let mut value: Int = 9223372036854775806;
     while (value > 0) {
         value = value + 1;
     }
@@ -104,10 +129,38 @@ crash();
         },
     );
 
+    let expected = Vm::new(compile_to_bytecode(source).expect("interpreter module"))
+        .run()
+        .expect_err("interpreter overflow");
     let error = vm.run().expect_err("integer overflow");
 
-    assert!(error.message.contains("integer overflow in addition"));
-    assert!(error.span.line > 0);
+    assert_eq!(error.message, expected.message);
+    assert_eq!(error.phase, expected.phase);
+    assert_eq!(error.span, expected.span);
+
+    #[cfg(feature = "jit")]
+    {
+        let stats = vm.jit_stats().expect("jit stats");
+        assert_eq!(stats.native_trace_runs, 1);
+        assert_eq!(stats.native_trace_bailouts, 1);
+    }
+}
+
+#[test]
+fn jit_matches_interpreter_for_overflow_bailout() {
+    assert_jit_matches_interpreter(
+        r#"
+fn crash() -> Int {
+    let mut value: Int = 9223372036854775806;
+    while (value > 0) {
+        value = value + 1;
+    }
+    return value;
+}
+
+crash();
+"#,
+    );
 }
 
 #[test]
@@ -145,4 +198,27 @@ fn count() -> Int {
 
 count();
 "#
+}
+
+fn assert_jit_matches_interpreter(source: &str) {
+    let module = compile_to_bytecode(source).expect("module");
+    let interpreter = Vm::new(module.clone()).run();
+    let mut jit = Vm::new_with_options(
+        module,
+        VmOptions {
+            jit_enabled: true,
+            hot_loop_threshold: 1,
+        },
+    );
+    let jitted = jit.run();
+
+    match (interpreter, jitted) {
+        (Ok(left), Ok(right)) => assert_eq!(left.to_string(), right.to_string()),
+        (Err(left), Err(right)) => {
+            assert_eq!(left.message, right.message);
+            assert_eq!(left.phase, right.phase);
+            assert_eq!(left.span, right.span);
+        }
+        (left, right) => panic!("interpreter/JIT mismatch: {left:?} vs {right:?}"),
+    }
 }

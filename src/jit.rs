@@ -25,6 +25,8 @@ pub struct TraceStats {
     pub traces_rejected: usize,
     pub interpreted_trace_runs: usize,
     pub native_trace_runs: usize,
+    #[cfg(feature = "jit")]
+    pub native_trace_bailouts: usize,
 }
 
 #[derive(Debug)]
@@ -97,21 +99,21 @@ impl TraceEngine {
             return Ok(None);
         };
 
-        match trace.run(module, stack, stack_base)? {
-            TraceRunResult::LoopHeader => {
-                match trace.last_run_mode() {
-                    TraceRunMode::Interpreted => self.stats.interpreted_trace_runs += 1,
-                    #[cfg(feature = "jit")]
-                    TraceRunMode::Native => self.stats.native_trace_runs += 1,
+        let result = trace.run(module, stack, stack_base);
+        match trace.last_run_mode() {
+            TraceRunMode::Interpreted => self.stats.interpreted_trace_runs += 1,
+            #[cfg(feature = "jit")]
+            TraceRunMode::Native => {
+                self.stats.native_trace_runs += 1;
+                if trace.last_native_bailed_out() {
+                    self.stats.native_trace_bailouts += 1;
                 }
-                Ok(Some(TraceOutcome::Continue))
             }
+        }
+
+        match result? {
+            TraceRunResult::LoopHeader => Ok(Some(TraceOutcome::Continue)),
             TraceRunResult::ExitToInterpreter { ip } => {
-                match trace.last_run_mode() {
-                    TraceRunMode::Interpreted => self.stats.interpreted_trace_runs += 1,
-                    #[cfg(feature = "jit")]
-                    TraceRunMode::Native => self.stats.native_trace_runs += 1,
-                }
                 Ok(Some(TraceOutcome::ExitToInterpreter { ip }))
             }
         }
@@ -127,6 +129,8 @@ pub struct Trace {
     #[cfg_attr(not(feature = "jit"), allow(dead_code))]
     loop_span: Span,
     last_run_mode: TraceRunMode,
+    #[cfg_attr(not(feature = "jit"), allow(dead_code))]
+    last_native_bailed_out: bool,
     #[cfg(feature = "jit")]
     native: Option<NativeTrace>,
 }
@@ -240,6 +244,7 @@ impl Trace {
             exit_ip: exit_ip.ok_or(TraceBuildError)?,
             loop_span,
             last_run_mode: TraceRunMode::Interpreted,
+            last_native_bailed_out: false,
             #[cfg(feature = "jit")]
             native,
         };
@@ -254,6 +259,11 @@ impl Trace {
         self.last_run_mode
     }
 
+    #[cfg_attr(not(feature = "jit"), allow(dead_code))]
+    fn last_native_bailed_out(&self) -> bool {
+        self.last_native_bailed_out
+    }
+
     fn run(
         &mut self,
         module: &BytecodeModule,
@@ -261,16 +271,20 @@ impl Trace {
         stack_base: usize,
     ) -> VmResult<TraceRunResult> {
         if !self.locals_are_int(stack, stack_base) {
+            self.last_run_mode = TraceRunMode::Interpreted;
+            self.last_native_bailed_out = false;
             return Ok(TraceRunResult::ExitToInterpreter {
                 ip: self.key.loop_header_ip,
             });
         }
 
+        self.last_native_bailed_out = false;
         #[cfg(feature = "jit")]
         if let Some(native) = &self.native {
-            let result = native.run(self, stack, stack_base)?;
+            let (bailed_out, result) = native.run(self, module, stack, stack_base);
             self.last_run_mode = TraceRunMode::Native;
-            return Ok(result);
+            self.last_native_bailed_out = bailed_out;
+            return result;
         }
 
         self.last_run_mode = TraceRunMode::Interpreted;
@@ -667,14 +681,19 @@ impl NativeTrace {
     fn run(
         &self,
         trace: &Trace,
+        module: &BytecodeModule,
         stack: &mut Vec<Value>,
         stack_base: usize,
-    ) -> VmResult<TraceRunResult> {
+    ) -> (bool, VmResult<TraceRunResult>) {
         let mut locals = Vec::with_capacity(trace.local_slots.len().max(1));
         let max_slot = trace.local_slots.iter().copied().max().unwrap_or(0);
         locals.resize(max_slot + 1, 0i64);
         for slot in &trace.local_slots {
-            locals[*slot] = read_int_local(stack, stack_base, *slot, trace.loop_span)?;
+            let value = match read_int_local(stack, stack_base, *slot, trace.loop_span) {
+                Ok(value) => value,
+                Err(error) => return (false, Err(error)),
+            };
+            locals[*slot] = value;
         }
         let mut state = NativeTraceState {
             locals: locals.as_mut_ptr(),
@@ -686,20 +705,54 @@ impl NativeTrace {
         match code {
             0 => {
                 for slot in &trace.local_slots {
-                    write_int_local(stack, stack_base, *slot, locals[*slot], trace.loop_span)?;
+                    if let Err(error) =
+                        write_int_local(stack, stack_base, *slot, locals[*slot], trace.loop_span)
+                    {
+                        return (false, Err(error));
+                    }
                 }
-                Ok(TraceRunResult::LoopHeader)
+                (false, Ok(TraceRunResult::LoopHeader))
             }
             1 => {
                 for slot in &trace.local_slots {
-                    write_int_local(stack, stack_base, *slot, locals[*slot], trace.loop_span)?;
+                    if let Err(error) =
+                        write_int_local(stack, stack_base, *slot, locals[*slot], trace.loop_span)
+                    {
+                        return (false, Err(error));
+                    }
                 }
                 stack.push(Value::Bool(false));
-                Ok(TraceRunResult::ExitToInterpreter { ip: trace.exit_ip })
+                (
+                    false,
+                    Ok(TraceRunResult::ExitToInterpreter { ip: trace.exit_ip }),
+                )
             }
-            _ => Ok(TraceRunResult::ExitToInterpreter {
-                ip: trace.key.loop_header_ip,
-            }),
+            2 => (true, trace.run_interpreted(module, stack, stack_base)),
+            other => (
+                true,
+                Err(unknown_native_return_code_error(other, trace.loop_span)),
+            ),
         }
+    }
+}
+
+#[cfg(feature = "jit")]
+fn unknown_native_return_code_error(code: i32, span: Span) -> crate::error::MuninnError {
+    vm_error(format!("unknown native trace return code {code}"), span)
+}
+
+#[cfg(all(test, feature = "jit"))]
+mod native_tests {
+    use super::unknown_native_return_code_error;
+    use crate::span::Span;
+
+    #[test]
+    fn unknown_native_return_code_is_vm_error() {
+        let span = Span::range(2, 3, 4, 2, 8, 9);
+        let error = unknown_native_return_code_error(99, span);
+
+        assert_eq!(error.phase, "vm");
+        assert_eq!(error.message, "unknown native trace return code 99");
+        assert_eq!(error.span, span);
     }
 }

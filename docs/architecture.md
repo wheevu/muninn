@@ -13,7 +13,7 @@ source -> lexer -> parser -> typecheck -> bytecode -> VM
 - `src/typecheck.rs` is the semantic source of truth for types, symbols, references, and diagnostics.
 - `src/compiler.rs` lowers checked programs into bytecode.
 - `src/bytecode.rs` encodes, decodes, and validates `.mubc` modules.
-- `src/vm.rs` executes bytecode and reports span-carrying runtime errors.
+- `src/vm.rs` executes bytecode, maintains VM-local global lookup cache stats, handles safe-point reloads, and reports span-carrying runtime errors.
 - `src/frontend.rs` shares parser/typechecker results with CLI and LSP tooling.
 - `lsp/` is deliberately thin: diagnostics, hover, and definition use the same semantic model as the CLI.
 
@@ -27,7 +27,11 @@ Tensor allocation is capped so source programs cannot request arbitrarily large 
 
 The JIT is experimental and feature-gated with `--features jit`. It only targets small hot loops over local `Int` values. Unsupported traces fall back to the interpreter.
 
-The native path is deliberately narrow: traces are interpreted first by the trace engine and the Cranelift backend only handles a small integer subset with overflow bailouts. It is not a general optimizer.
+The native path is deliberately narrow: traces are interpreted by the trace engine when no native trace is available, and the Cranelift backend only handles a small integer subset with overflow bailouts back to the interpreter. It is not a general optimizer.
+
+## Global lookup cache
+
+The VM caches global reads by name for the current globals epoch. Defining or mutating a global, requesting/applying reload, or other runtime cache invalidation bumps the epoch; the invalidation counter records every epoch bump, even when the cache is already empty. This is a focused lookup cache, not a promised inline-cache optimization surface.
 
 ## Non-goals for now
 

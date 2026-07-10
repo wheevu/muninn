@@ -56,7 +56,7 @@ fn metrics_table() -> io::Result<String> {
 
 fn count_workspace_tests() -> io::Result<usize> {
     let mut count = 0;
-    for root in ["src", "tests", "lsp/src"] {
+    for root in ["src", "tests", "lsp/src", "lsp/tests"] {
         for path in rust_files(root)? {
             count += fs::read_to_string(path)?
                 .lines()
