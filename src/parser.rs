@@ -310,7 +310,6 @@ impl Parser {
     fn parse_or(&mut self) -> Result<Expr, MuninnError> {
         let mut expr = self.parse_and()?;
         while self.match_simple(&TokenKind::OrOr) {
-            let op_span = self.previous().span;
             let right = self.parse_and()?;
             let span = expr.span.merge(right.span);
             expr = Expr {
@@ -320,7 +319,7 @@ impl Parser {
                     op: BinaryOp::Or,
                     right: Box::new(right),
                 },
-                span: op_span.merge(span),
+                span,
             };
         }
         Ok(expr)
@@ -329,7 +328,6 @@ impl Parser {
     fn parse_and(&mut self) -> Result<Expr, MuninnError> {
         let mut expr = self.parse_equality()?;
         while self.match_simple(&TokenKind::AndAnd) {
-            let op_span = self.previous().span;
             let right = self.parse_equality()?;
             let span = expr.span.merge(right.span);
             expr = Expr {
@@ -339,7 +337,7 @@ impl Parser {
                     op: BinaryOp::And,
                     right: Box::new(right),
                 },
-                span: op_span.merge(span),
+                span,
             };
         }
         Ok(expr)

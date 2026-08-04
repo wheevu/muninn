@@ -175,18 +175,21 @@ impl ModuleCompiler {
             } => {
                 self.compile_expr(compiler, condition);
                 let else_jump = compiler.emit_jump(OpCode::JumpIfFalse, stmt.span);
-                compiler.emit_op(OpCode::Pop, stmt.span);
-                self.compile_block(compiler, then_branch, false);
-                let end_jump = else_branch
-                    .as_ref()
-                    .map(|_| compiler.emit_jump(OpCode::Jump, stmt.span));
-                compiler.patch_jump(else_jump, stmt.span, &mut self.errors);
-                compiler.emit_op(OpCode::Pop, stmt.span);
-                if let Some(else_branch) = else_branch {
-                    self.compile_block(compiler, else_branch, false);
-                }
-                if let Some(end_jump) = end_jump {
-                    compiler.patch_jump(end_jump, stmt.span, &mut self.errors);
+                match else_branch {
+                    Some(else_branch) => {
+                        compiler.emit_op(OpCode::Pop, stmt.span);
+                        self.compile_block(compiler, then_branch, false);
+                        let end_jump = compiler.emit_jump(OpCode::Jump, stmt.span);
+                        compiler.patch_jump(else_jump, stmt.span, &mut self.errors);
+                        compiler.emit_op(OpCode::Pop, stmt.span);
+                        self.compile_block(compiler, else_branch, false);
+                        compiler.patch_jump(end_jump, stmt.span, &mut self.errors);
+                    }
+                    None => {
+                        self.compile_block(compiler, then_branch, false);
+                        compiler.patch_jump(else_jump, stmt.span, &mut self.errors);
+                        compiler.emit_op(OpCode::Pop, stmt.span);
+                    }
                 }
             }
             StmtKind::Assign { name, value, .. } => {

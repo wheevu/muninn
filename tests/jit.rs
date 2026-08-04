@@ -54,6 +54,44 @@ sum_to(8);
 }
 
 #[test]
+fn jit_matches_interpreter_for_loop_with_conditional_body() {
+    assert_jit_matches_interpreter(
+        r#"
+fn count() -> Int {
+    let mut total: Int = 0;
+    let mut i: Int = 0;
+    while (i < 10) {
+        if (i < 5) {
+            total = total + 1;
+        }
+        i = i + 1;
+    }
+    return total;
+}
+count();
+"#,
+    );
+}
+
+#[test]
+fn jit_matches_interpreter_for_loop_with_bool_local() {
+    assert_jit_matches_interpreter(
+        r#"
+fn f() -> Int {
+    let mut flag: Bool = true;
+    let mut x: Int = 0;
+    while (flag) {
+        x = x + 1;
+        flag = x < 5;
+    }
+    return x;
+}
+f();
+"#,
+    );
+}
+
+#[test]
 fn unsupported_global_loop_is_rejected_without_changing_result() {
     let source = r#"
 let mut total: Int = 0;

@@ -60,3 +60,17 @@ fn renders_golden_runtime_division_by_zero_error() {
     let expected = "vm error: division by zero\n --> 1:1\n  |\n  1 | 1 / 0;\n  | ^^^^^";
     assert_eq!(rendered, expected);
 }
+
+#[test]
+fn logical_operator_error_span_covers_left_operand() {
+    let source = "let x: Bool = 1 && true;";
+    let analysis = analyze_document(source);
+    let error = analysis
+        .diagnostics
+        .iter()
+        .find(|error| error.message.contains("logical operator"))
+        .expect("logical operator diagnostic");
+    let expr_offset = source.find("1 && true").expect("expression offset");
+    assert_eq!(error.span.offset, expr_offset);
+    assert_eq!(error.span.end_offset, source.find(';').expect("semicolon offset"));
+}

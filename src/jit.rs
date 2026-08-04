@@ -113,6 +113,15 @@ impl TraceEngine {
 
         match result? {
             TraceRunResult::LoopHeader => Ok(Some(TraceOutcome::Continue)),
+            TraceRunResult::ExitToInterpreter { ip } if ip == key.loop_header_ip => {
+                // The trace cannot make progress (for example, one of its
+                // locals is not an Int): retrying it would spin forever at
+                // the loop header. Drop the trace and let the interpreter
+                // take over this loop.
+                self.traces.remove(&key);
+                self.rejected.insert(key);
+                Ok(None)
+            }
             TraceRunResult::ExitToInterpreter { ip } => {
                 Ok(Some(TraceOutcome::ExitToInterpreter { ip }))
             }
@@ -124,8 +133,6 @@ pub struct Trace {
     key: TraceKey,
     ops: Vec<TraceOp>,
     local_slots: Vec<usize>,
-    #[cfg_attr(not(feature = "jit"), allow(dead_code))]
-    exit_ip: usize,
     #[cfg_attr(not(feature = "jit"), allow(dead_code))]
     loop_span: Span,
     last_run_mode: TraceRunMode,
@@ -229,7 +236,7 @@ impl Trace {
             }
         }
 
-        if !matches!(ops.last(), Some(TraceOp::Loop)) {
+        if !matches!(ops.last(), Some(TraceOp::Loop)) || exit_ip.is_none() {
             return Err(TraceBuildError);
         }
 
@@ -241,7 +248,6 @@ impl Trace {
             key,
             ops,
             local_slots,
-            exit_ip: exit_ip.ok_or(TraceBuildError)?,
             loop_span,
             last_run_mode: TraceRunMode::Interpreted,
             last_native_bailed_out: false,
@@ -542,6 +548,8 @@ impl NativeTrace {
 
         let state = fb.block_params(entry)[0];
         let locals = fb.ins().load(pointer_type, MemFlags::trusted(), state, 0);
+        let error_ip_offset = std::mem::offset_of!(NativeTraceState, error_ip) as i64;
+        let error_ip_ptr = fb.ins().iadd_imm(state, error_ip_offset);
         let mut stack = Vec::new();
         for op in &trace.ops {
             match *op {
@@ -626,7 +634,7 @@ impl NativeTrace {
                         .pop()
                         .ok_or_else(|| "native stack underflow".to_string())?;
                 }
-                TraceOp::JumpIfFalse { .. } => {
+                TraceOp::JumpIfFalse { target_ip, .. } => {
                     let condition = *stack
                         .last()
                         .ok_or_else(|| "native stack underflow".to_string())?;
@@ -636,6 +644,9 @@ impl NativeTrace {
                     fb.ins()
                         .brif(is_false, exit_block, &[], continue_block, &[]);
                     fb.switch_to_block(exit_block);
+                    let exit_target = fb.ins().iconst(pointer_type, target_ip as i64);
+                    fb.ins()
+                        .store(MemFlags::trusted(), exit_target, error_ip_ptr, 0);
                     let exit_code = fb.ins().iconst(types::I32, 1);
                     fb.ins().return_(&[exit_code]);
                     fb.seal_block(exit_block);
@@ -724,7 +735,9 @@ impl NativeTrace {
                 stack.push(Value::Bool(false));
                 (
                     false,
-                    Ok(TraceRunResult::ExitToInterpreter { ip: trace.exit_ip }),
+                    Ok(TraceRunResult::ExitToInterpreter {
+                        ip: state.error_ip,
+                    }),
                 )
             }
             2 => (true, trace.run_interpreted(module, stack, stack_base)),

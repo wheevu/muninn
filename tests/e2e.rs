@@ -187,3 +187,41 @@ fn rejects_tensor_allocation_above_runtime_limit() {
     assert_eq!(errors[0].phase, "vm");
     assert!(errors[0].message.contains("maximum is 10000000"));
 }
+
+#[test]
+fn runs_if_statement_without_else_without_corrupting_locals() {
+    let src = r#"
+fn bump(flag: Bool) -> Int {
+    let mut x: Int = 1;
+    if (flag) {
+        x = x + 1;
+    }
+    return x;
+}
+bump(true);
+"#;
+
+    let value = compile_and_run(src).expect("value");
+    assert_eq!(value.to_string(), "2");
+}
+
+#[test]
+fn runs_if_statement_without_else_inside_loop() {
+    let src = r#"
+fn count() -> Int {
+    let mut total: Int = 0;
+    let mut i: Int = 0;
+    while (i < 10) {
+        if (i < 5) {
+            total = total + 1;
+        }
+        i = i + 1;
+    }
+    return total;
+}
+count();
+"#;
+
+    let value = compile_and_run(src).expect("value");
+    assert_eq!(value.to_string(), "5");
+}
