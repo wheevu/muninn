@@ -44,6 +44,34 @@ Muninn has a small tensor runtime for typed numerical scripts.
 
 For the compiler/runtime shape and current boundaries, see [Architecture](docs/architecture.md).
 
+Tensor shape contract: `[]` is the scalar shape, while every dimension of a
+non-scalar tensor must be positive. Zero-element tensors are rejected at the
+constructor and runtime boundaries instead of being represented as a
+one-element buffer.
+
+## Differentiable tensor expressions
+
+Muninn also exposes a small eager Rust API for reverse-mode differentiation.
+It is intentionally an interpreter-only fallback: `grad` evaluates a captured
+tensor tape and does not change source compilation, bytecode execution, hot
+reload, LSP, or the optional integer JIT.
+
+```rust
+use muninn::{Tape, Tensor, grad};
+
+let tape = Tape::new();
+let x = tape.variable(Tensor::scalar(3.0));
+let loss = x.mul(&x)?.sum()?;
+let dx = grad(&loss, &x)?;
+assert_eq!(dx.data(), &[6.0]);
+```
+
+The graph supports eager broadcasting, elementwise add/subtract/multiply,
+rank-2 matrix multiplication, full sums, and axis sums. A loss must be a
+scalar tensor; shape mismatches and missing paths return structured,
+shape-aware errors. See `examples/curve_fit.rs` for a small curve-fitting
+example without any external numerical runtime.
+
 ## Runtime modes
 
 The same source can be checked, run directly, compiled to bytecode, or run with the experimental JIT.

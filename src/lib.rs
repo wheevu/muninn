@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod autodiff;
 pub mod bytecode;
 pub mod compiler;
 pub mod error;
@@ -16,6 +17,7 @@ pub mod typecheck;
 pub mod value;
 pub mod vm;
 
+pub use autodiff::{AutodiffError, AutodiffErrorKind, Tape, TensorExpr, Variable, grad};
 pub use bytecode::{
     BytecodeDecodeError, BytecodeModule, GlobalSpec, GlobalValueKind, decode_bytecode_module,
     encode_bytecode_module,
@@ -23,6 +25,7 @@ pub use bytecode::{
 pub use frontend::{
     FrontendAnalysis, analyze_document, check_document, lex_document, parse_document,
 };
+pub use tensor::Tensor;
 pub use typecheck::{SemanticModel, Symbol, SymbolKind, Ty};
 pub use value::Value;
 

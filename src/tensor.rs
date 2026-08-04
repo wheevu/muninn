@@ -5,6 +5,12 @@ use crate::span::Span;
 
 const MAX_TENSOR_ELEMENTS: usize = 10_000_000;
 
+/// A dense tensor with row-major storage.
+///
+/// The empty shape `[]` represents a scalar with one value. Non-scalar
+/// tensors must have strictly positive dimensions; zero-element tensors are
+/// intentionally unsupported so shape arithmetic cannot silently turn an
+/// empty tensor into a one-element tensor.
 #[derive(Debug, Clone)]
 pub struct Tensor {
     shape: Vec<usize>,
@@ -12,6 +18,29 @@ pub struct Tensor {
 }
 
 impl Tensor {
+    pub fn from_data(shape: Vec<usize>, data: Vec<f64>, span: Span) -> VmResult<Self> {
+        let expected = element_count(&shape, span)?;
+        if data.len() != expected {
+            return Err(vm_error(
+                format!(
+                    "tensor data length {} does not match shape {} (expected {})",
+                    data.len(),
+                    format_shape(&shape),
+                    expected
+                ),
+                span,
+            ));
+        }
+        Ok(Self { shape, data })
+    }
+
+    pub fn scalar(value: f64) -> Self {
+        Self {
+            shape: Vec::new(),
+            data: vec![value],
+        }
+    }
+
     pub fn zeros(shape: Vec<usize>, span: Span) -> VmResult<Self> {
         let len = element_count(&shape, span)?;
         Ok(Self {
@@ -130,6 +159,9 @@ pub fn matmul(left: &Tensor, right: &Tensor, span: Span) -> VmResult<Tensor> {
         ));
     }
 
+    let result_shape = vec![m, n];
+    validate_shape(&result_shape, span)?;
+
     let result_len = m
         .checked_mul(n)
         .ok_or_else(|| vm_error("tensor_matmul result shape is too large", span))?;
@@ -155,7 +187,7 @@ pub fn matmul(left: &Tensor, right: &Tensor, span: Span) -> VmResult<Tensor> {
     }
 
     Ok(Tensor {
-        shape: vec![m, n],
+        shape: result_shape,
         data,
     })
 }
@@ -239,7 +271,8 @@ fn broadcast_index(
     linear
 }
 
-fn element_count(shape: &[usize], span: Span) -> VmResult<usize> {
+pub(crate) fn element_count(shape: &[usize], span: Span) -> VmResult<usize> {
+    validate_shape(shape, span)?;
     let count = shape.iter().try_fold(1usize, |total, dim| {
         total
             .checked_mul(*dim)
@@ -254,7 +287,21 @@ fn element_count(shape: &[usize], span: Span) -> VmResult<usize> {
             span,
         ));
     }
-    Ok(count.max(1))
+    Ok(count)
+}
+
+fn validate_shape(shape: &[usize], span: Span) -> VmResult<()> {
+    if let Some(axis) = shape.iter().position(|dim| *dim == 0) {
+        return Err(vm_error(
+            format!(
+                "tensor shape dimensions must be positive; axis {} is zero in shape {}",
+                axis,
+                format_shape(shape)
+            ),
+            span,
+        ));
+    }
+    Ok(())
 }
 
 pub fn format_shape(shape: &[usize]) -> String {
@@ -310,5 +357,39 @@ mod tests {
         let error = Tensor::zeros(vec![usize::MAX, 2], Span::default()).expect_err("overflow");
 
         assert!(error.message.contains("tensor shape is too large"));
+    }
+
+    #[test]
+    fn rejects_zero_dimensions_in_tensor_constructors() {
+        let from_data = Tensor::from_data(vec![0], vec![1.0], Span::default())
+            .expect_err("zero-sized from_data tensor");
+        let zeros =
+            Tensor::zeros(vec![2, 0], Span::default()).expect_err("zero-sized zeros tensor");
+        let filled =
+            Tensor::filled(vec![0, 3], 1.0, Span::default()).expect_err("zero-sized filled tensor");
+        let reshaped = Tensor::scalar(1.0)
+            .reshape(vec![0, 1], Span::default())
+            .expect_err("zero-sized reshaped tensor");
+
+        for error in [from_data, zeros, filled, reshaped] {
+            assert!(error.message.contains("dimensions must be positive"));
+            assert!(error.message.contains("shape"));
+        }
+    }
+
+    #[test]
+    fn rejects_zero_dimensions_in_matmul_results() {
+        let left = Tensor {
+            shape: vec![0, 2],
+            data: Vec::new(),
+        };
+        let right = Tensor {
+            shape: vec![2, 1],
+            data: vec![1.0, 2.0],
+        };
+
+        let error = matmul(&left, &right, Span::default()).expect_err("zero-sized matmul");
+
+        assert!(error.message.contains("dimensions must be positive"));
     }
 }
