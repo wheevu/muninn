@@ -14,6 +14,7 @@ This extension provides thin VS Code integration for Muninn (`.mun`) files.
 ## Requirements
 
 - VS Code 1.85+
+- Node.js 20+ and npm
 - `muninn-lsp` available either:
   - via `muninn.serverPath`
   - at `target/debug/muninn-lsp` in the opened workspace
@@ -27,7 +28,7 @@ From repository root:
 ```bash
 cargo build -p muninn-lsp
 cd editors/vscode
-npm install
+npm ci
 npm run compile
 ```
 
