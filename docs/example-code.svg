@@ -22,7 +22,7 @@
     <text x="104" y="482"><tspan fill="#d9b86c">return</tspan><tspan fill="#d8dee9"> x;</tspan></text>
     <text x="76" y="510" fill="#d8dee9">}</text>
 
-    <text x="530" y="482"><tspan fill="#d9b86c">let</tspan><tspan fill="#d8dee9"> divisor: </tspan><tspan fill="#88c0d0">Int</tspan><tspan fill="#d8dee9"> = gcd(</tspan><tspan fill="#b9a7ff">84</tspan><tspan fill="#d8dee9">, </tspan><tspan fill="#b9a7ff">30</tspan><tspan fill="#d8dee9">);</tspan></text>
+     <text x="76" y="538"><tspan fill="#d9b86c">let</tspan><tspan fill="#d8dee9"> divisor: </tspan><tspan fill="#88c0d0">Int</tspan><tspan fill="#d8dee9"> = gcd(</tspan><tspan fill="#b9a7ff">84</tspan><tspan fill="#d8dee9">, </tspan><tspan fill="#b9a7ff">30</tspan><tspan fill="#d8dee9">);</tspan></text>
   </g>
 
   <rect x="48" y="566" width="884" height="48" rx="8" fill="#0f141b" stroke="#2e3440"/>

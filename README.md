@@ -8,10 +8,18 @@
 
 Muninn is a small statically typed scripting language implemented in Rust.
 
-## Requirements
+## Quickstart
 
-Muninn requires a stable Rust toolchain with Rust 2024 edition support.
+Requirements: a stable Rust toolchain with Rust 2024 edition support.
 Node.js 20 or newer and npm are needed only to develop the VS Code extension.
+
+Run the demo, execute a source file, or run the test suite:
+
+```bash
+cargo run
+cargo run -- run examples/dsa_euclid.mun
+cargo test --workspace
+```
 
 ![Muninn compiler pipeline](docs/muninn-pipeline.svg)
 
@@ -223,3 +231,12 @@ Run benchmarks with JIT support compiled in:
 ```bash
 cargo bench --features jit --bench runtime
 ```
+
+## Documentation
+
+- [`docs/architecture.md`](docs/architecture.md): compiler, runtime, and project boundaries.
+- [`docs/metrics.md`](docs/metrics.md): generated project metrics and benchmark inputs.
+- [`docs/muninn-pipeline.svg`](docs/muninn-pipeline.svg): compiler pipeline.
+- [`docs/runtime-modes.svg`](docs/runtime-modes.svg): source, bytecode, interpreter, and JIT paths.
+- [`docs/tensor-rune.svg`](docs/tensor-rune.svg): tensor runtime path.
+- [`docs/example-code.svg`](docs/example-code.svg): example program walkthrough.

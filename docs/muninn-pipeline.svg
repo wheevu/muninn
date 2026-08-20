@@ -1,14 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="980" height="470" viewBox="0 0 980 470">
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="470" viewBox="0 0 980 470" role="img" aria-labelledby="title desc">
+  <title id="title">Muninn compiler pipeline</title>
+  <desc id="desc">Muninn source moves through lexing, parsing, type checking, bytecode generation, and VM execution, with interpreter and JIT paths.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#88c0d0"/>
+    </marker>
+  </defs>
   <rect width="980" height="470" rx="18" fill="#0b0f14"/>
   <rect x="22" y="22" width="936" height="426" rx="10" fill="#121821" stroke="#2e3440"/>
   <text x="48" y="64" fill="#d8dee9" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="24" font-weight="700" letter-spacing="0.08em">MUNINN ᚱ</text>
   <text x="48" y="92" fill="#7f8ea3" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">statically typed scripts → bytecode → VM / JIT</text>
 
-  <line x1="130" y1="178" x2="850" y2="178" stroke="#2e3440" stroke-width="2"/>
-  <line x1="850" y1="178" x2="850" y2="250" stroke="#2e3440" stroke-width="2"/>
-  <line x1="490" y1="178" x2="490" y2="250" stroke="#2e3440" stroke-width="2"/>
-  <line x1="490" y1="312" x2="382" y2="350" stroke="#2e3440" stroke-width="2"/>
-  <line x1="490" y1="312" x2="598" y2="350" stroke="#2e3440" stroke-width="2"/>
+  <path d="M198 166 H244" fill="none" stroke="#88c0d0" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M360 166 H408" fill="none" stroke="#88c0d0" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M572 166 H620" fill="none" stroke="#88c0d0" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M701 200 V226 H850 V250" fill="none" stroke="#88c0d0" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M490 200 V250" fill="none" stroke="#8fbcbb" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M490 318 V326 H348 V336" fill="none" stroke="#88c0d0" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M490 318 V326 H632 V336" fill="none" stroke="#b9a7ff" stroke-width="2" marker-end="url(#arrow)"/>
 
   <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
     <rect x="62" y="132" width="136" height="68" rx="7" fill="#0f141b" stroke="#88c0d0"/>

@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="980" height="410" viewBox="0 0 980 410">
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="420" viewBox="0 0 980 420" role="img" aria-labelledby="title desc">
+  <title id="title">Muninn runtime modes</title>
+  <desc id="desc">The same Muninn source can be checked, run through the VM, compiled to bytecode, or executed with the experimental JIT.</desc>
   <rect width="980" height="410" rx="18" fill="#0b0f14"/>
   <rect x="22" y="22" width="936" height="366" rx="10" fill="#121821" stroke="#2e3440"/>
   <text x="48" y="64" fill="#d8dee9" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="700" letter-spacing="0.08em">RUNTIME MODES ᚱ</text>
@@ -22,5 +24,5 @@
     <text x="190" y="334" fill="#d8dee9" font-size="13">hot Int loops → Cranelift JIT</text>
   </g>
 
-  <text x="48" y="374" fill="#4c566a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">ᚲ check · ᚱ run · ᛒ build · ᛃ jit</text>
+  <text x="48" y="398" fill="#4c566a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">ᚲ check · ᚱ run · ᛒ build · ᛃ jit</text>
 </svg>
