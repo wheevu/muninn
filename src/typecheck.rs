@@ -711,8 +711,7 @@ impl Analyzer {
         match &stmt.kind {
             StmtKind::Return(_) => true,
             StmtKind::While { condition, body } => {
-                matches!(condition.kind, ExprKind::Bool(true))
-                    && self.block_guarantees_return(body)
+                matches!(condition.kind, ExprKind::Bool(true)) && self.block_guarantees_return(body)
             }
             StmtKind::If {
                 then_branch,

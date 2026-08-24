@@ -72,5 +72,8 @@ fn logical_operator_error_span_covers_left_operand() {
         .expect("logical operator diagnostic");
     let expr_offset = source.find("1 && true").expect("expression offset");
     assert_eq!(error.span.offset, expr_offset);
-    assert_eq!(error.span.end_offset, source.find(';').expect("semicolon offset"));
+    assert_eq!(
+        error.span.end_offset,
+        source.find(';').expect("semicolon offset")
+    );
 }

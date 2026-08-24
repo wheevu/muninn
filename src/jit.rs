@@ -735,9 +735,7 @@ impl NativeTrace {
                 stack.push(Value::Bool(false));
                 (
                     false,
-                    Ok(TraceRunResult::ExitToInterpreter {
-                        ip: state.error_ip,
-                    }),
+                    Ok(TraceRunResult::ExitToInterpreter { ip: state.error_ip }),
                 )
             }
             2 => (true, trace.run_interpreted(module, stack, stack_base)),
