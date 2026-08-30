@@ -26,12 +26,12 @@ fn all_examples_parse_check_and_run() {
 }
 
 #[test]
-fn readme_example_runs() {
-    let readme = fs::read_to_string("README.md").expect("readme");
-    let start = readme
+fn guide_example_runs() {
+    let guide = fs::read_to_string("GUIDE.md").expect("guide");
+    let start = guide
         .find("```muninn")
-        .expect("README has muninn code block");
-    let block = &readme[start + "```muninn".len()..];
+        .expect("GUIDE has muninn code block");
+    let block = &guide[start + "```muninn".len()..];
     let end = block.find("```\n").expect("code block end");
     let source = block[..end].trim();
 

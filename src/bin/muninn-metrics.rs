@@ -19,7 +19,7 @@ fn main() -> io::Result<()> {
     let metrics = metrics_table()?;
     fs::create_dir_all("docs")?;
     fs::write("docs/metrics.md", &metrics)?;
-    update_readme("README.md", &metrics)?;
+    update_readme("GUIDE.md", &metrics)?;
     println!("wrote docs/metrics.md");
     Ok(())
 }
