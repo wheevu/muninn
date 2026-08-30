@@ -7,6 +7,19 @@ A small statically typed scripting language built in Rust.
 Muninn parses source, checks types, compiles bytecode, and runs it on a stack VM.
 The same program can run through the interpreter, bytecode path, hot-reload runtime, or the experimental integer tracing JIT.
 
+## Measured snapshot
+
+| Metric | Result |
+| --- | ---: |
+| Workspace tests | 117 |
+| Benchmark targets | 6 |
+| Scalar loop, compile and run | 538 µs/op |
+| Scalar loop, VM only | 480 µs/op |
+| Tensor pipeline, compile and run | 40 µs/op |
+
+Apple M1, Rust 1.97.1, release mode, commit `942fda4`.
+These are local wall-clock measurements from `muninn-metrics`, not portable latency claims.
+
 ![Muninn runtime modes](docs/runtime-modes.svg)
 
 ## Language shape
