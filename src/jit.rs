@@ -35,6 +35,57 @@ pub enum TraceOutcome {
     ExitToInterpreter { ip: usize },
 }
 
+/// Containment seam between the VM and trace execution.
+///
+/// The VM talks only to this trait: hot-loop observation, ready-trace
+/// execution, stats, and clearing. Everything Cranelift-specific stays
+/// behind the `jit` feature inside `TraceEngine` and `Trace`, so monthly
+/// upstream API breakage cannot leak into `vm.rs` or the rest of the core.
+pub trait JitBackend {
+    /// Records one loop-back-edge hit, compiling the trace once the hot
+    /// threshold is reached.
+    fn observe_loop(&mut self, module: &BytecodeModule, key: TraceKey);
+
+    /// Runs the compiled trace for `key` when one exists.
+    fn run_if_ready(
+        &mut self,
+        key: TraceKey,
+        module: &BytecodeModule,
+        stack: &mut Vec<Value>,
+        stack_base: usize,
+    ) -> VmResult<Option<TraceOutcome>>;
+
+    /// Returns a copy of the engine counters.
+    fn stats(&self) -> TraceStats;
+
+    /// Drops all counters, traces, and rejections (reload path).
+    fn clear(&mut self);
+}
+
+impl JitBackend for TraceEngine {
+    fn observe_loop(&mut self, module: &BytecodeModule, key: TraceKey) {
+        TraceEngine::observe_loop(self, module, key);
+    }
+
+    fn run_if_ready(
+        &mut self,
+        key: TraceKey,
+        module: &BytecodeModule,
+        stack: &mut Vec<Value>,
+        stack_base: usize,
+    ) -> VmResult<Option<TraceOutcome>> {
+        TraceEngine::run_if_ready(self, key, module, stack, stack_base)
+    }
+
+    fn stats(&self) -> TraceStats {
+        TraceEngine::stats(self)
+    }
+
+    fn clear(&mut self) {
+        TraceEngine::clear(self);
+    }
+}
+
 pub struct TraceEngine {
     threshold: usize,
     counters: HashMap<TraceKey, usize>,
@@ -530,6 +581,7 @@ impl NativeTrace {
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .map_err(|error| error.to_string())?;
+        let frontend_config = isa.frontend_config();
         let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         let mut module = JITModule::new(builder);
         let pointer_type = module.target_config().pointer_type();
@@ -547,9 +599,11 @@ impl NativeTrace {
         let bailout_block = fb.create_block();
 
         let state = fb.block_params(entry)[0];
-        let locals = fb.ins().load(pointer_type, MemFlags::trusted(), state, 0);
+        let locals = fb
+            .ins()
+            .load(pointer_type, MemFlagsData::trusted(), state, 0);
         let error_ip_offset = std::mem::offset_of!(NativeTraceState, error_ip) as i64;
-        let error_ip_ptr = fb.ins().iadd_imm(state, error_ip_offset);
+        let error_ip_ptr = fb.ins().iadd_imm_s(state, error_ip_offset);
         let mut stack = Vec::new();
         for op in &trace.ops {
             match *op {
@@ -561,7 +615,7 @@ impl NativeTrace {
                     let offset = (slot * std::mem::size_of::<i64>()) as i32;
                     stack.push(
                         fb.ins()
-                            .load(types::I64, MemFlags::trusted(), locals, offset),
+                            .load(types::I64, MemFlagsData::trusted(), locals, offset),
                     );
                 }
                 TraceOp::SetLocal { slot, .. } => {
@@ -569,7 +623,8 @@ impl NativeTrace {
                         .pop()
                         .ok_or_else(|| "native stack underflow".to_string())?;
                     let offset = (slot * std::mem::size_of::<i64>()) as i32;
-                    fb.ins().store(MemFlags::trusted(), value, locals, offset);
+                    fb.ins()
+                        .store(MemFlagsData::trusted(), value, locals, offset);
                 }
                 TraceOp::IntBinary { kind, span: _ } => {
                     let right = stack
@@ -638,7 +693,7 @@ impl NativeTrace {
                     let condition = *stack
                         .last()
                         .ok_or_else(|| "native stack underflow".to_string())?;
-                    let is_false = fb.ins().icmp_imm(IntCC::Equal, condition, 0);
+                    let is_false = fb.ins().icmp_imm_s(IntCC::Equal, condition, 0);
                     let continue_block = fb.create_block();
                     let exit_block = fb.create_block();
                     fb.ins()
@@ -646,7 +701,7 @@ impl NativeTrace {
                     fb.switch_to_block(exit_block);
                     let exit_target = fb.ins().iconst(pointer_type, target_ip as i64);
                     fb.ins()
-                        .store(MemFlags::trusted(), exit_target, error_ip_ptr, 0);
+                        .store(MemFlagsData::trusted(), exit_target, error_ip_ptr, 0);
                     let exit_code = fb.ins().iconst(types::I32, 1);
                     fb.ins().return_(&[exit_code]);
                     fb.seal_block(exit_block);
@@ -663,7 +718,7 @@ impl NativeTrace {
         let bailout_code = fb.ins().iconst(types::I32, 2);
         fb.ins().return_(&[bailout_code]);
         fb.seal_block(bailout_block);
-        fb.finalize();
+        fb.finalize(frontend_config);
 
         let id = module
             .declare_function("muninn_trace", Linkage::Export, &ctx.func.signature)
