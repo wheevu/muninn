@@ -28,12 +28,13 @@ pub use frontend::{
 pub use tensor::Tensor;
 pub use typecheck::{SemanticModel, Symbol, SymbolKind, Ty};
 pub use value::Value;
+pub use vm::{HostPolicy, Vm};
 
 use bytecode::{GlobalSpec as ModuleGlobalSpec, GlobalValueKind as ModuleGlobalValueKind};
 use compiler::compile_program;
 use error::MuninnError;
 use typecheck::check_program;
-use vm::{Vm, VmOptions};
+use vm::VmOptions;
 
 pub fn compile_to_bytecode(source: &str) -> Result<BytecodeModule, Vec<MuninnError>> {
     let program = parse_document(source)?;
@@ -51,7 +52,9 @@ pub fn compile_to_bytecode(source: &str) -> Result<BytecodeModule, Vec<MuninnErr
                 name: symbol.name.clone(),
                 kind: ModuleGlobalValueKind::Function,
             }),
-            SymbolKind::Local | SymbolKind::Parameter | SymbolKind::NativeFunction(_) => None,
+            SymbolKind::Local
+            | SymbolKind::Parameter
+            | SymbolKind::NativeFunction(_) => None,
         })
         .collect();
     Ok(module)
@@ -65,8 +68,18 @@ pub fn run_bytecode_module_with_options(
     module: BytecodeModule,
     options: VmOptions,
 ) -> Result<Value, Vec<MuninnError>> {
+    run_bytecode_module_with_policy(module, HostPolicy::default(), options)
+}
+
+/// Runs a validated module under an explicit host policy. Use one call per
+/// untrusted script: budgets and globals are per-VM, never shared.
+pub fn run_bytecode_module_with_policy(
+    module: BytecodeModule,
+    policy: HostPolicy,
+    options: VmOptions,
+) -> Result<Value, Vec<MuninnError>> {
     bytecode::validate_module(&module)?;
-    let mut vm = Vm::new_with_options(module, options);
+    let mut vm = Vm::new_with_policy_and_options(module, policy, options);
     vm.run()
         .map_err(|error| vec![MuninnError::new("vm", error.message, error.span)])
 }

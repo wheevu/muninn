@@ -258,10 +258,90 @@ pub fn native_by_kind(kind: NativeFunctionKind) -> Option<&'static NativeSpec> {
     NATIVE_SPECS.iter().find(|spec| spec.kind == kind)
 }
 
+/// Display name of a native builtin, used in host-policy diagnostics.
+pub fn native_name(kind: NativeFunctionKind) -> &'static str {
+    native_by_kind(kind)
+        .map(|spec| spec.name)
+        .unwrap_or("<unknown native>")
+}
+
 pub fn invoke_native(kind: NativeFunctionKind, args: &[Value], span: Span) -> VmResult<Value> {
     let spec = native_by_kind(kind)
         .ok_or_else(|| vm_error(format!("unknown native function {:?}", kind), span))?;
     (spec.runtime)(NativeCallContext::new(args, span))
+}
+
+/// Dispatches a native builtin with a host-enforced tensor element cap.
+///
+/// Shapes for constructors (`tensor_zeros`, `tensor_fill`) are validated
+/// before allocation so a hostile shape traps without allocating. Caps at
+/// or above the built-in 10M limit delegate to [`invoke_native`], whose
+/// existing `element_count` path enforces the built-in limit.
+pub fn invoke_native_with_limit(
+    kind: NativeFunctionKind,
+    args: &[Value],
+    span: Span,
+    max_elements: usize,
+) -> VmResult<Value> {
+    const BUILTIN_MAX_ELEMENTS: usize = 10_000_000;
+    if max_elements < BUILTIN_MAX_ELEMENTS {
+        check_shape_limit(kind, args, span, max_elements)?;
+    }
+    let result = invoke_native(kind, args, span)?;
+    if let Value::Tensor(tensor) = &result
+        && tensor.data().len() > max_elements
+    {
+        return Err(vm_error(
+            format!(
+                "tensor has {} elements, maximum is {} for this host",
+                tensor.data().len(),
+                max_elements
+            ),
+            span,
+        ));
+    }
+    Ok(result)
+}
+
+/// Pre-allocation shape check for tensor constructors.
+fn check_shape_limit(
+    kind: NativeFunctionKind,
+    args: &[Value],
+    span: Span,
+    max_elements: usize,
+) -> VmResult<()> {
+    let dims: Vec<i64> = match kind {
+        NativeFunctionKind::TensorZeros => match args {
+            [Value::Int(a)] => vec![*a],
+            [Value::Int(a), Value::Int(b)] => vec![*a, *b],
+            _ => return Ok(()),
+        },
+        NativeFunctionKind::TensorFill => match args {
+            [Value::Int(a), Value::Float(_)] => vec![*a],
+            [Value::Int(a), Value::Int(b), Value::Float(_)] => vec![*a, *b],
+            _ => return Ok(()),
+        },
+        _ => return Ok(()),
+    };
+    let mut count: usize = 1;
+    for dim in dims {
+        if dim <= 0 {
+            return Ok(());
+        }
+        count = count
+            .checked_mul(dim as usize)
+            .ok_or_else(|| vm_error("tensor shape is too large", span))?;
+        if count > max_elements {
+            return Err(vm_error(
+                format!(
+                    "tensor has at least {} elements, maximum is {} for this host",
+                    count, max_elements
+                ),
+                span,
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn native_print(ctx: NativeCallContext<'_>) -> VmResult<Value> {

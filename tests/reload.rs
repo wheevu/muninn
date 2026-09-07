@@ -1,6 +1,6 @@
 use muninn::{
     compile_to_bytecode,
-    vm::{ReloadStatus, Vm},
+    vm::{HostPolicy, ReloadStatus, Vm},
 };
 
 #[test]
@@ -193,4 +193,32 @@ i;
     vm.request_reload(compile_to_bytecode(patched).expect("patched"))
         .expect("request reload");
     assert_eq!(vm.poll_safe_point(), ReloadStatus::Ready);
+}
+
+#[test]
+fn fuel_budget_resets_on_successful_reload() {
+    let source_v1 = r#"
+let mut i: Int = 0;
+while (i < 100000) {
+    i = i + 1;
+}
+i;
+"#;
+    let source_v2 = r#"
+let mut i: Int = 0;
+i = 7;
+i;
+"#;
+
+    let mut policy = HostPolicy::sandboxed();
+    policy.max_steps = Some(1_000);
+    let mut vm = Vm::new_with_policy(compile_to_bytecode(source_v1).expect("v1"), policy);
+    let error = vm.run().expect_err("v1 exhausts its fuel");
+    assert!(error.to_string().contains("fuel exhausted"));
+
+    vm.request_reload(compile_to_bytecode(source_v2).expect("v2"))
+        .expect("request reload");
+    vm.apply_pending_reload().expect("apply reload");
+    // A fresh program starts a fresh budget: the reloaded module runs clean.
+    assert_eq!(vm.run().expect("v2 runs").to_string(), "7");
 }

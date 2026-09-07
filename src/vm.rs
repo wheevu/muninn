@@ -1,11 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::bytecode::{BytecodeModule, Chunk, Constant, GlobalValueKind, OpCode, validate_module};
 use crate::error::MuninnError;
-use crate::jit::{TraceEngine, TraceKey, TraceOutcome, TraceStats};
+use crate::jit::{JitBackend, TraceEngine, TraceKey, TraceOutcome, TraceStats};
 use crate::native::{
-    add_values, divide_values, invoke_native, multiply_values, registered_natives, subtract_values,
+    NativeFunctionKind, add_values, divide_values, invoke_native_with_limit, multiply_values,
+    native_name, registered_natives, subtract_values,
 };
 use crate::runtime::{VmResult, vm_error};
 use crate::span::Span;
@@ -21,6 +23,10 @@ pub enum ReloadStatus {
 pub struct Vm {
     module: BytecodeModule,
     globals: HashMap<String, Value>,
+    policy: HostPolicy,
+    steps_used: u64,
+    started_at: Instant,
+    ops_since_clock_check: u32,
     global_cache: HashMap<String, CachedGlobal>,
     global_cache_stats: GlobalCacheStats,
     globals_epoch: u64,
@@ -29,7 +35,7 @@ pub struct Vm {
     started: bool,
     pending_reload: Option<BytecodeModule>,
     preserve_existing_globals: bool,
-    traces: Option<TraceEngine>,
+    traces: Option<Box<dyn JitBackend>>,
     /// First fatal execution fault, if any. Faulting instructions leave the
     /// stack and frames mid-operation, so the VM cannot resume: later
     /// `run`/`step_instruction` calls repeat this error instead of
@@ -42,6 +48,92 @@ pub struct Vm {
 pub struct VmOptions {
     pub jit_enabled: bool,
     pub hot_loop_threshold: usize,
+}
+
+/// Deny-by-default host policy for embedding untrusted scripts.
+///
+/// Each `Vm` owns an isolated globals map, so running one untrusted script
+/// per `Vm` is the isolation boundary: globals, fuel, and clocks are never
+/// shared across VMs. `HostPolicy::default()` is permissive (legacy
+/// behavior: all natives allowed, no limits); `HostPolicy::sandboxed()` is
+/// the deny-by-default starting point where the host explicitly enables
+/// what the guest may use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostPolicy {
+    /// Deterministic instruction budget. Exhaustion traps with a vm-phase
+    /// error carrying the span of the current instruction. `None` = unlimited.
+    pub max_steps: Option<u64>,
+    /// Best-effort wall-clock preemption, checked every 1024 instructions
+    /// to bound overhead. `None` = no limit.
+    pub wall_clock_timeout_ms: Option<u64>,
+    /// Cap on tensor element counts, enforced at native allocation
+    /// boundaries. Defaults to the built-in 10M limit.
+    pub max_tensor_elements: usize,
+    /// Allowlist for native builtins. `None` = allow all (legacy);
+    /// `Some(set)` = only kinds in the set may run. Disabled builtins
+    /// trap with an actionable vm-phase diagnostic, never a panic.
+    pub allowed_natives: Option<HashSet<NativeFunctionKind>>,
+    /// When true, scripts cannot overwrite existing globals (host-seeded
+    /// values) and `SetGlobal` always traps. Fresh `DefineGlobal` bindings
+    /// are still allowed.
+    pub readonly_globals: bool,
+}
+
+/// Built-in tensor element limit from `tensor.rs`; the host default.
+pub const DEFAULT_MAX_TENSOR_ELEMENTS: usize = 10_000_000;
+
+const CLOCK_CHECK_INTERVAL: u32 = 1024;
+
+impl HostPolicy {
+    /// Deny-by-default policy: no natives allowed, bounded fuel and tensor
+    /// cap, no wall-clock limit. The host enables natives explicitly via
+    /// [`HostPolicy::allow`] and tunes the numeric limits.
+    pub fn sandboxed() -> Self {
+        Self {
+            max_steps: Some(100_000),
+            wall_clock_timeout_ms: None,
+            max_tensor_elements: DEFAULT_MAX_TENSOR_ELEMENTS,
+            allowed_natives: Some(HashSet::new()),
+            readonly_globals: false,
+        }
+    }
+
+    /// Explicitly enables one native builtin for the guest.
+    pub fn allow(&mut self, kind: NativeFunctionKind) {
+        match &mut self.allowed_natives {
+            Some(set) => {
+                set.insert(kind);
+            }
+            None => {
+                let mut set = HashSet::new();
+                set.insert(kind);
+                self.allowed_natives = Some(set);
+            }
+        }
+    }
+
+    /// Allows every known native builtin (restores legacy behavior).
+    pub fn allow_all_natives(&mut self) {
+        self.allowed_natives = None;
+    }
+
+    pub fn is_native_allowed(&self, kind: NativeFunctionKind) -> bool {
+        self.allowed_natives
+            .as_ref()
+            .is_none_or(|set| set.contains(&kind))
+    }
+}
+
+impl Default for HostPolicy {
+    fn default() -> Self {
+        Self {
+            max_steps: None,
+            wall_clock_timeout_ms: None,
+            max_tensor_elements: DEFAULT_MAX_TENSOR_ELEMENTS,
+            allowed_natives: None,
+            readonly_globals: false,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -82,8 +174,23 @@ impl Vm {
     }
 
     pub fn new_with_options(module: BytecodeModule, options: VmOptions) -> Self {
+        Self::new_with_policy_and_options(module, HostPolicy::default(), options)
+    }
+
+    /// Embeds a module under an explicit host policy. Use one `Vm` per
+    /// untrusted script: globals and budgets are per-VM, never shared.
+    pub fn new_with_policy(module: BytecodeModule, policy: HostPolicy) -> Self {
+        Self::new_with_policy_and_options(module, policy, VmOptions::default())
+    }
+
+    pub fn new_with_policy_and_options(
+        module: BytecodeModule,
+        policy: HostPolicy,
+        options: VmOptions,
+    ) -> Self {
         let mut vm = Self {
             globals: HashMap::new(),
+            policy,
             global_cache: HashMap::new(),
             global_cache_stats: GlobalCacheStats::default(),
             globals_epoch: 0,
@@ -92,11 +199,14 @@ impl Vm {
             started: false,
             pending_reload: None,
             preserve_existing_globals: false,
-            traces: options
-                .jit_enabled
-                .then(|| TraceEngine::new(options.hot_loop_threshold)),
+            traces: options.jit_enabled.then(|| {
+                Box::new(TraceEngine::new(options.hot_loop_threshold)) as Box<dyn JitBackend>
+            }),
             aborted: None,
             module,
+            steps_used: 0,
+            started_at: Instant::now(),
+            ops_since_clock_check: 0,
         };
         vm.install_natives();
         vm.reserve_runtime_capacity(
@@ -107,7 +217,7 @@ impl Vm {
     }
 
     pub fn jit_stats(&self) -> Option<TraceStats> {
-        self.traces.as_ref().map(TraceEngine::stats)
+        self.traces.as_ref().map(|traces| traces.stats())
     }
 
     pub fn global_cache_stats(&self) -> GlobalCacheStats {
@@ -224,8 +334,53 @@ impl Vm {
         }
         self.stack.clear();
         self.frames.clear();
+        self.steps_used = 0;
+        self.started_at = Instant::now();
+        self.ops_since_clock_check = 0;
         self.push_frame(self.module.entry_function, 0, span)?;
         self.started = true;
+        Ok(())
+    }
+
+    /// Returns the host policy this VM executes under.
+    pub fn policy(&self) -> &HostPolicy {
+        &self.policy
+    }
+
+    /// Returns the deterministic instruction count consumed so far.
+    pub fn steps_used(&self) -> u64 {
+        self.steps_used
+    }
+
+    /// Enforces the host fuel and wall-clock budgets. Fuel exhaustion is
+    /// deterministic: the same script with the same `max_steps` traps at
+    /// the same instruction. Wall-clock preemption is best-effort and
+    /// checked every [`CLOCK_CHECK_INTERVAL`] instructions to bound overhead.
+    fn check_budget(&mut self, span: Span) -> VmResult<()> {
+        self.steps_used += 1;
+        if let Some(max_steps) = self.policy.max_steps
+            && self.steps_used > max_steps
+        {
+            return Err(vm_error(
+                format!(
+                    "fuel exhausted after {} instructions (max_steps {})",
+                    self.steps_used, max_steps
+                ),
+                span,
+            ));
+        }
+        self.ops_since_clock_check += 1;
+        if self.ops_since_clock_check >= CLOCK_CHECK_INTERVAL {
+            self.ops_since_clock_check = 0;
+            if let Some(timeout_ms) = self.policy.wall_clock_timeout_ms
+                && self.started_at.elapsed() > Duration::from_millis(timeout_ms)
+            {
+                return Err(vm_error(
+                    format!("wall-clock timeout after {} ms", timeout_ms),
+                    span,
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -262,6 +417,7 @@ impl Vm {
         }
 
         let span = self.current_chunk(function_id).span_at(ip);
+        self.check_budget(span)?;
         let byte = *self
             .current_chunk(function_id)
             .code
@@ -319,6 +475,12 @@ impl Vm {
                 let value = self.pop(span)?;
                 if !self.globals.contains_key(&name) {
                     return Err(vm_error(format!("unknown global '{}'", name), span));
+                }
+                if self.policy.readonly_globals {
+                    return Err(vm_error(
+                        format!("global '{}' is readonly under this host policy", name),
+                        span,
+                    ));
                 }
                 self.evict_global_key(&name);
                 self.globals.insert(name, value);
@@ -559,7 +721,19 @@ impl Vm {
                 self.push_frame(function_id, arg_count, span)
             }
             Value::Native(kind) => {
-                let result = invoke_native(kind, &self.stack[callee_index + 1..], span)?;
+                if !self.policy.is_native_allowed(kind) {
+                    return Err(vm_error(
+                        format!("native '{}' is disabled by host policy", native_name(kind)),
+                        span,
+                    ));
+                }
+                let max_elements = self.policy.max_tensor_elements;
+                let result = invoke_native_with_limit(
+                    kind,
+                    &self.stack[callee_index + 1..],
+                    span,
+                    max_elements,
+                )?;
                 self.stack.truncate(callee_index);
                 self.stack.push(result);
                 Ok(())
