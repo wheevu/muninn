@@ -204,3 +204,40 @@ fn check_command_without_path_fails() {
     assert!(stderr.contains("missing source file for command 'check'"));
     assert!(stderr.contains("Usage:"));
 }
+
+#[test]
+fn run_bc_rejects_mutated_artifact() {
+    let source = r#"
+let value: Int = 4;
+value + 3;
+"#;
+    let source_path = write_temp_source(source);
+    let output_path = temp_bytecode_path();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_muninn"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&output_path)
+        .output()
+        .expect("run muninn build");
+    assert!(build.status.success());
+
+    // Corrupt the magic header. Artifacts are validated on load, never
+    // trusted, so any mutation must fail instead of executing.
+    let mut bytes = fs::read(&output_path).expect("read artifact");
+    bytes[0] = b'X';
+    fs::write(&output_path, bytes).expect("write mutated artifact");
+
+    let run = Command::new(env!("CARGO_BIN_EXE_muninn"))
+        .arg("run-bc")
+        .arg(&output_path)
+        .output()
+        .expect("run muninn run-bc");
+
+    let _ = fs::remove_file(&source_path);
+    let _ = fs::remove_file(&output_path);
+
+    assert!(!run.status.success());
+    assert!(String::from_utf8_lossy(&run.stderr).contains("bytecode error"));
+}

@@ -22,7 +22,15 @@ source -> lexer -> parser -> typecheck -> bytecode -> VM
 
 The VM treats bytecode as an input boundary. Decoded modules are validated before execution: opcodes, operand widths, local slots, jump targets, function references, and entry function bounds are checked before the VM runs.
 
+Accepted modules additionally guarantee three runtime properties: no operand-stack underflow on any reachable path, no fall off the end of a function, and agreement on stack height wherever control-flow paths join. Jump and loop targets must be instruction starts, not merely in-bounds offsets. Operand types are deliberately unchecked: the value stack is dynamically typed, so type errors stay runtime guards with source spans.
+
 Tensor allocation is capped so source programs cannot request arbitrarily large runtime buffers through tensor builtins. The empty shape `[]` is a scalar; all non-scalar dimensions must be positive, and zero-element tensors are rejected consistently. Compiler operands that must fit bytecode fields are checked before emission.
+
+## Bytecode artifact contract
+
+`.mubc` files are validated on load, never trusted. Decoding rejects bad magic, unsupported versions, truncated payloads, oversized counts, unknown tags, and invalid UTF-8; the decoded module then passes the same validation as compiler output before anything runs. There is no fast path that skips validation.
+
+Compatibility promises are narrow: same-`MUBC_VERSION` artifacts only, strict trailing-byte rejection, and float bits (including NaN payloads) preserved exactly through encode and decode. Opcode numbers are never reused once assigned. Decoding uses no `unsafe`; the only `unsafe` in the workspace is the feature-gated JIT native-trace path.
 
 ## JIT boundary
 

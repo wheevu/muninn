@@ -214,6 +214,10 @@ Run a precompiled bytecode artifact:
 cargo run -- run-bc examples/dsa_euclid.mubc
 ```
 
+Artifacts are validated on load before anything runs; a corrupted or
+incompatible `.mubc` file fails with a bytecode error instead of
+executing. See [Architecture](docs/architecture.md) for the contract.
+
 Run tests:
 
 ```bash

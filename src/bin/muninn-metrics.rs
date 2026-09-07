@@ -105,7 +105,7 @@ fn rust_files(root: &str) -> io::Result<Vec<std::path::PathBuf>> {
 fn example_size(path: &str) -> io::Result<ExampleSize> {
     let source = fs::read_to_string(path)?;
     let module = compile_to_bytecode(&source).map_err(render_errors)?;
-    let bytecode = encode_bytecode_module(&module);
+    let bytecode = encode_bytecode_module(&module).map_err(io::Error::other)?;
     Ok(ExampleSize {
         source_bytes: source.len(),
         bytecode_bytes: bytecode.len(),

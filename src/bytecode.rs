@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 
 use crate::error::MuninnError;
@@ -112,7 +112,20 @@ impl Chunk {
         }
     }
 
-    pub fn from_parts(code: Vec<u8>, spans: Vec<Span>, constants: Vec<Constant>) -> Self {
+    pub fn from_parts(
+        code: Vec<u8>,
+        spans: Vec<Span>,
+        constants: Vec<Constant>,
+    ) -> Result<Self, String> {
+        // Constant operands are addressed by u16 indices everywhere, so a
+        // larger pool would silently wrap rebuilt dedup keys. Reject it at
+        // construction instead of corrupting later lookups.
+        if constants.len() > u16::MAX as usize {
+            return Err(format!(
+                "too many constants: maximum is {} entries",
+                u16::MAX
+            ));
+        }
         let mut chunk = Self {
             code,
             spans,
@@ -120,7 +133,7 @@ impl Chunk {
             constant_index: HashMap::new(),
         };
         chunk.rebuild_constant_index();
-        chunk
+        Ok(chunk)
     }
 
     pub fn write_op(&mut self, op: OpCode, span: Span) {
@@ -269,7 +282,8 @@ impl Display for BytecodeDecodeError {
 
 impl std::error::Error for BytecodeDecodeError {}
 
-pub fn encode_bytecode_module(module: &BytecodeModule) -> Vec<u8> {
+pub fn encode_bytecode_module(module: &BytecodeModule) -> Result<Vec<u8>, String> {
+    check_encodable(module)?;
     let mut bytes = Vec::new();
     bytes.extend_from_slice(MUBC_MAGIC);
     write_u16(&mut bytes, MUBC_VERSION);
@@ -295,7 +309,58 @@ pub fn encode_bytecode_module(module: &BytecodeModule) -> Vec<u8> {
             write_constant(&mut bytes, constant);
         }
     }
-    bytes
+    Ok(bytes)
+}
+
+/// Rejects modules whose sizes do not fit the `.mubc` fixed-width fields
+/// before encoding, so `encode_bytecode_module` never silently truncates a
+/// `usize` into a `u32`. Only hand-built modules can reach these limits;
+/// compiler output is bounded by its own operand checks.
+fn check_encodable(module: &BytecodeModule) -> Result<(), String> {
+    fn check_size(value: usize, what: &str) -> Result<(), String> {
+        if value > u32::MAX as usize {
+            return Err(format!(
+                "{} count {} exceeds u32 range in .mubc payload",
+                what, value
+            ));
+        }
+        Ok(())
+    }
+
+    check_size(module.entry_function, "entry function")?;
+    check_size(module.globals.len(), "global")?;
+    check_size(module.functions.len(), "function")?;
+    for global in &module.globals {
+        check_size(global.name.len(), "global name")?;
+    }
+    for function in &module.functions {
+        check_size(function.name.len(), "function name")?;
+        check_size(function.arity, "arity")?;
+        check_size(function.local_count, "local slot")?;
+        check_size(function.chunk.code.len(), "code byte")?;
+        check_size(function.chunk.spans.len(), "span")?;
+        check_size(function.chunk.constants.len(), "constant")?;
+        for span in &function.chunk.spans {
+            for coordinate in [
+                span.line,
+                span.column,
+                span.offset,
+                span.end_line,
+                span.end_column,
+                span.end_offset,
+            ] {
+                check_size(coordinate, "span coordinate")?;
+            }
+        }
+        for constant in &function.chunk.constants {
+            match constant {
+                Constant::Function(id) => check_size(*id, "function id")?,
+                Constant::String(value) => check_size(value.len(), "string constant")?,
+                Constant::Int(_) | Constant::Float(_) | Constant::Bool(_) | Constant::Nil => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn decode_bytecode_module(bytes: &[u8]) -> Result<BytecodeModule, BytecodeDecodeError> {
@@ -348,7 +413,7 @@ pub fn decode_bytecode_module(bytes: &[u8]) -> Result<BytecodeModule, BytecodeDe
             arity,
             local_count,
             expects_return_value,
-            chunk: Chunk::from_parts(code, spans, constants),
+            chunk: Chunk::from_parts(code, spans, constants).map_err(BytecodeDecodeError::new)?,
         });
     }
 
@@ -429,6 +494,9 @@ pub fn validate_module(module: &BytecodeModule) -> Result<(), Vec<MuninnError>> 
         }
 
         let mut ip = 0usize;
+        let mut walk_ok = true;
+        let mut starts: HashSet<usize> = HashSet::new();
+        let mut jumps: Vec<(usize, usize)> = Vec::new();
         while ip < function.chunk.code.len() {
             let span = function.chunk.span_at(ip);
             let byte = function.chunk.code[ip];
@@ -438,6 +506,7 @@ pub fn validate_module(module: &BytecodeModule) -> Result<(), Vec<MuninnError>> 
                     format!("invalid opcode {} in function '{}'", byte, function.name),
                     span,
                 ));
+                walk_ok = false;
                 break;
             };
 
@@ -451,8 +520,11 @@ pub fn validate_module(module: &BytecodeModule) -> Result<(), Vec<MuninnError>> 
                     ),
                     span,
                 ));
+                walk_ok = false;
                 break;
             }
+
+            starts.insert(ip);
 
             match op {
                 OpCode::Constant => {
@@ -505,29 +577,20 @@ pub fn validate_module(module: &BytecodeModule) -> Result<(), Vec<MuninnError>> 
                 }
                 OpCode::Jump | OpCode::JumpIfFalse => {
                     let jump = read_u16(&function.chunk.code, ip + 1) as usize;
-                    let target = ip + width + jump;
-                    if target > function.chunk.code.len() {
-                        errors.push(MuninnError::new(
-                            "compiler",
-                            format!(
-                                "forward jump target {} out of bounds in function '{}'",
-                                target, function.name
-                            ),
-                            span,
-                        ));
-                    }
+                    jumps.push((ip, ip + width + jump));
                 }
                 OpCode::Loop => {
                     let jump = read_u16(&function.chunk.code, ip + 1) as usize;
-                    if jump > ip + width {
-                        errors.push(MuninnError::new(
+                    match (ip + width).checked_sub(jump) {
+                        Some(target) => jumps.push((ip, target)),
+                        None => errors.push(MuninnError::new(
                             "compiler",
                             format!(
                                 "backward loop jump {} underflows instruction pointer in function '{}'",
                                 jump, function.name
                             ),
                             span,
-                        ));
+                        )),
                     }
                 }
                 OpCode::Call
@@ -550,12 +613,43 @@ pub fn validate_module(module: &BytecodeModule) -> Result<(), Vec<MuninnError>> 
             ip += width;
         }
 
+        // Jump targets must be instruction starts, not just in-bounds
+        // offsets. A target inside an operand would decode
+        // attacker-influenced bytes as opcodes, so bounds alone are lax.
+        if walk_ok {
+            for (site, target) in &jumps {
+                if !starts.contains(target) {
+                    errors.push(MuninnError::new(
+                        "compiler",
+                        format!(
+                            "jump target {} is not an instruction boundary in function '{}'",
+                            target, function.name
+                        ),
+                        function.chunk.span_at(*site),
+                    ));
+                }
+            }
+        }
+
         if function_id == module.entry_function && function.chunk.code.is_empty() {
             errors.push(MuninnError::new(
                 "compiler",
                 "entry function has empty bytecode",
                 Span::default(),
             ));
+        } else if function.chunk.code.is_empty() {
+            // An empty non-entry function would fault with an out-of-range
+            // instruction pointer on first call. The compiler always emits
+            // at least a Nil/Return epilogue.
+            errors.push(MuninnError::new(
+                "compiler",
+                format!("function '{}' has empty bytecode", function.name),
+                Span::default(),
+            ));
+        }
+
+        if walk_ok && !function.chunk.code.is_empty() {
+            check_function_stack(function, &starts, &mut errors);
         }
     }
 
@@ -564,6 +658,183 @@ pub fn validate_module(module: &BytecodeModule) -> Result<(), Vec<MuninnError>> 
     } else {
         Err(errors)
     }
+}
+
+/// Validates operand-stack heights over a function's control-flow graph.
+///
+/// Accepted modules guarantee three runtime properties: no stack
+/// underflow on any reachable path, no fall off the end of the bytecode,
+/// and agreement on stack height wherever paths join. Types are
+/// deliberately unchecked: the value stack is dynamically typed, so
+/// operand-type errors stay runtime guards. `JumpIfFalse` peeks rather
+/// than pops, which the height model must mirror or it false-rejects
+/// every compiler-emitted branch. Code after `Return` is validated
+/// decode-only by the linear walk; only reachable paths take heights.
+fn check_function_stack(
+    function: &FunctionBytecode,
+    starts: &HashSet<usize>,
+    errors: &mut Vec<MuninnError>,
+) {
+    let code = &function.chunk.code;
+    let span_at = |ip: usize| function.chunk.span_at(ip);
+
+    let mut heights: HashMap<usize, usize> = HashMap::new();
+    let mut worklist: Vec<(usize, usize)> = vec![(0, 0)];
+    while let Some((ip, height)) = worklist.pop() {
+        if let Some(&recorded) = heights.get(&ip) {
+            if recorded != height {
+                errors.push(MuninnError::new(
+                    "compiler",
+                    format!(
+                        "stack height mismatch at byte {} in function '{}' (expected {}, found {})",
+                        ip, function.name, recorded, height
+                    ),
+                    span_at(ip),
+                ));
+            }
+            continue;
+        }
+        heights.insert(ip, height);
+
+        let byte = code[ip];
+        let Some(op) = OpCode::from_byte(byte) else {
+            continue;
+        };
+        let width = instruction_width(op);
+        let next = ip + width;
+
+        match op {
+            OpCode::Constant
+            | OpCode::Nil
+            | OpCode::True
+            | OpCode::False
+            | OpCode::GetLocal
+            | OpCode::GetGlobal => {
+                push_fallthrough(&mut worklist, errors, function, next, op, height + 1)
+            }
+            OpCode::Pop | OpCode::SetLocal | OpCode::SetGlobal | OpCode::DefineGlobal => {
+                if height < 1 {
+                    push_underflow(errors, function, ip);
+                } else {
+                    push_fallthrough(&mut worklist, errors, function, next, op, height - 1);
+                }
+            }
+            OpCode::Add
+            | OpCode::Subtract
+            | OpCode::Multiply
+            | OpCode::Divide
+            | OpCode::Equal
+            | OpCode::Greater
+            | OpCode::Less => {
+                if height < 2 {
+                    push_underflow(errors, function, ip);
+                } else {
+                    push_fallthrough(&mut worklist, errors, function, next, op, height - 1);
+                }
+            }
+            OpCode::Negate | OpCode::Not => {
+                if height < 1 {
+                    push_underflow(errors, function, ip);
+                } else {
+                    push_fallthrough(&mut worklist, errors, function, next, op, height);
+                }
+            }
+            OpCode::JumpIfFalse => {
+                if height < 1 {
+                    push_underflow(errors, function, ip);
+                    continue;
+                }
+                let jump = read_u16(code, ip + 1) as usize;
+                let target = ip + width + jump;
+                // Both successors are checked against instruction starts by
+                // the boundary pass; only follow validated edges here.
+                if starts.contains(&target) {
+                    worklist.push((target, height));
+                }
+                push_fallthrough(&mut worklist, errors, function, next, op, height);
+            }
+            OpCode::Jump => {
+                let jump = read_u16(code, ip + 1) as usize;
+                let target = ip + width + jump;
+                if starts.contains(&target) {
+                    worklist.push((target, height));
+                }
+            }
+            OpCode::Loop => {
+                let jump = read_u16(code, ip + 1) as usize;
+                if let Some(target) = (ip + width).checked_sub(jump)
+                    && starts.contains(&target)
+                {
+                    worklist.push((target, height));
+                }
+            }
+            OpCode::Call => {
+                let arg_count = code[ip + 1] as usize;
+                if height < arg_count + 1 {
+                    push_underflow(errors, function, ip);
+                } else {
+                    push_fallthrough(
+                        &mut worklist,
+                        errors,
+                        function,
+                        next,
+                        op,
+                        height - arg_count,
+                    );
+                }
+            }
+            OpCode::Return => {
+                // The VM tolerates an empty stack here only for functions
+                // that do not promise a value; anything else faults with a
+                // fell-through error at runtime.
+                if function.expects_return_value && height < 1 {
+                    errors.push(MuninnError::new(
+                        "compiler",
+                        format!(
+                            "return expects a value on the stack in function '{}'",
+                            function.name
+                        ),
+                        span_at(ip),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn push_fallthrough(
+    worklist: &mut Vec<(usize, usize)>,
+    errors: &mut Vec<MuninnError>,
+    function: &FunctionBytecode,
+    next: usize,
+    op: OpCode,
+    height: usize,
+) {
+    if next < function.chunk.code.len() {
+        worklist.push((next, height));
+    } else if op != OpCode::Return {
+        // Falling off the end is a runtime fault, so only `Return` may end
+        // a function.
+        errors.push(MuninnError::new(
+            "compiler",
+            format!(
+                "function '{}' can fall off the end of its bytecode",
+                function.name
+            ),
+            function.chunk.span_at(next.saturating_sub(1)),
+        ));
+    }
+}
+
+fn push_underflow(errors: &mut Vec<MuninnError>, function: &FunctionBytecode, ip: usize) {
+    errors.push(MuninnError::new(
+        "compiler",
+        format!(
+            "stack underflow at byte {} in function '{}'",
+            ip, function.name
+        ),
+        function.chunk.span_at(ip),
+    ));
 }
 
 fn instruction_width(op: OpCode) -> usize {
@@ -875,7 +1146,7 @@ mod tests {
             }],
         };
 
-        let bytes = encode_bytecode_module(&module);
+        let bytes = encode_bytecode_module(&module).expect("encode");
         let decoded = decode_bytecode_module(&bytes).expect("decode");
 
         assert_eq!(decoded.entry_function, module.entry_function);
@@ -924,11 +1195,13 @@ mod tests {
                     vec![OpCode::Return as u8],
                     vec![Span::default()],
                     Vec::new(),
-                ),
+                )
+                .expect("chunk"),
             }],
             entry_function: 0,
             globals: module.globals,
-        });
+        })
+        .expect("encode");
         bytes.pop();
 
         let error = decode_bytecode_module(&bytes).expect_err("decode error");
@@ -961,7 +1234,7 @@ mod tests {
     #[test]
     fn decode_rejects_oversized_strings() {
         let module = valid_module_with_string("x".repeat(1_048_577));
-        let bytes = encode_bytecode_module(&module);
+        let bytes = encode_bytecode_module(&module).expect("encode");
 
         let error = decode_bytecode_module(&bytes).expect_err("decode error");
         assert!(error.message.contains("exceeds maximum"));
@@ -985,6 +1258,280 @@ mod tests {
             }],
             entry_function: 0,
             globals: Vec::new(),
+        }
+    }
+
+    fn module_with_code(
+        code: Vec<u8>,
+        local_count: usize,
+        expects_return_value: bool,
+    ) -> BytecodeModule {
+        let spans = vec![Span::default(); code.len()];
+        BytecodeModule {
+            functions: vec![FunctionBytecode {
+                name: "entry".to_string(),
+                arity: 0,
+                local_count,
+                expects_return_value,
+                chunk: Chunk::from_parts(code, spans, Vec::new()).expect("chunk"),
+            }],
+            entry_function: 0,
+            globals: Vec::new(),
+        }
+    }
+
+    fn validator_messages(module: &BytecodeModule) -> Vec<String> {
+        validate_module(module)
+            .expect_err("validator errors")
+            .into_iter()
+            .map(|error| error.message)
+            .collect()
+    }
+
+    #[test]
+    fn validator_rejects_jump_into_operand() {
+        // Target byte 5 is the slot operand of GetLocal, not an instruction.
+        let module = module_with_code(
+            vec![
+                OpCode::True as u8,
+                OpCode::JumpIfFalse as u8,
+                1,
+                0,
+                OpCode::GetLocal as u8,
+                0,
+                0,
+                OpCode::Return as u8,
+            ],
+            1,
+            false,
+        );
+
+        let messages = validator_messages(&module);
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("not an instruction boundary")),
+            "unexpected messages: {messages:?}"
+        );
+    }
+
+    #[test]
+    fn validator_rejects_jump_to_end_of_code() {
+        // Target equals code length: bounds checks pass, but there is no
+        // instruction there, so execution would fault out of range.
+        let module = module_with_code(
+            vec![
+                OpCode::True as u8,
+                OpCode::JumpIfFalse as u8,
+                2,
+                0,
+                OpCode::Pop as u8,
+                OpCode::Return as u8,
+            ],
+            0,
+            false,
+        );
+
+        let messages = validator_messages(&module);
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("not an instruction boundary"));
+    }
+
+    #[test]
+    fn validator_rejects_loop_into_operand() {
+        // Target byte 2 is the jump operand of the Loop itself.
+        let module = module_with_code(
+            vec![
+                OpCode::Nil as u8,
+                OpCode::Loop as u8,
+                2,
+                0,
+                OpCode::Return as u8,
+            ],
+            0,
+            false,
+        );
+
+        let messages = validator_messages(&module);
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("not an instruction boundary")),
+            "unexpected messages: {messages:?}"
+        );
+    }
+
+    #[test]
+    fn validator_rejects_stack_underflow() {
+        let module = module_with_code(vec![OpCode::Add as u8, OpCode::Return as u8], 0, false);
+
+        let messages = validator_messages(&module);
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("stack underflow at byte 0"));
+    }
+
+    #[test]
+    fn validator_rejects_branch_height_mismatch() {
+        // Taken path reaches Return with height 1, fallthrough with height 2.
+        let module = module_with_code(
+            vec![
+                OpCode::True as u8,
+                OpCode::JumpIfFalse as u8,
+                1,
+                0,
+                OpCode::Nil as u8,
+                OpCode::Return as u8,
+            ],
+            0,
+            false,
+        );
+
+        let messages = validator_messages(&module);
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("stack height mismatch"));
+    }
+
+    #[test]
+    fn validator_rejects_call_needing_more_values() {
+        let module = module_with_code(vec![OpCode::Call as u8, 0, OpCode::Return as u8], 0, false);
+
+        let messages = validator_messages(&module);
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("stack underflow"));
+    }
+
+    #[test]
+    fn validator_rejects_return_without_value_when_expected() {
+        let module = module_with_code(vec![OpCode::Return as u8], 0, true);
+
+        let messages = validator_messages(&module);
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("return expects a value"));
+    }
+
+    #[test]
+    fn validator_rejects_empty_non_entry_function() {
+        let mut entry = Chunk::new();
+        entry.write_op(OpCode::Nil, Span::default());
+        entry.write_op(OpCode::Return, Span::default());
+        let module = BytecodeModule {
+            functions: vec![
+                FunctionBytecode {
+                    name: "entry".to_string(),
+                    arity: 0,
+                    local_count: 0,
+                    expects_return_value: false,
+                    chunk: entry,
+                },
+                FunctionBytecode {
+                    name: "empty".to_string(),
+                    arity: 0,
+                    local_count: 0,
+                    expects_return_value: false,
+                    chunk: Chunk::new(),
+                },
+            ],
+            entry_function: 0,
+            globals: Vec::new(),
+        };
+
+        let messages = validator_messages(&module);
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("has empty bytecode"));
+    }
+
+    #[test]
+    fn validator_rejects_fall_off_end() {
+        let module = module_with_code(vec![OpCode::Nil as u8], 0, false);
+
+        let messages = validator_messages(&module);
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("can fall off the end"));
+    }
+
+    #[test]
+    fn from_parts_rejects_oversized_constant_pool() {
+        let constants: Vec<Constant> = (0..=u16::MAX as u32)
+            .map(|value| Constant::Int(value as i64))
+            .collect();
+
+        let error =
+            Chunk::from_parts(Vec::new(), Vec::new(), constants).expect_err("pool overflow");
+        assert!(error.contains("too many constants"));
+    }
+
+    #[test]
+    fn encode_rejects_counts_beyond_u32() {
+        let module = BytecodeModule {
+            functions: vec![FunctionBytecode {
+                name: "entry".to_string(),
+                arity: u32::MAX as usize + 1,
+                local_count: 0,
+                expects_return_value: false,
+                chunk: Chunk::new(),
+            }],
+            entry_function: 0,
+            globals: Vec::new(),
+        };
+
+        let error = encode_bytecode_module(&module).expect_err("encode overflow");
+        assert!(error.contains("exceeds u32"));
+    }
+
+    #[test]
+    fn validator_accepts_every_compiler_branch_shape() {
+        use crate::compiler::compile_program;
+        use crate::frontend::parse_document;
+
+        let sources = [
+            "let mut i: Int = 0;\nwhile (i < 10) {\n    i = i + 1;\n}\ni;\n",
+            "fn f(x: Int) -> Int {\n    if (x > 0) {\n        return 1;\n    } else {\n        return 2;\n    }\n}\nf(3);\n",
+            "fn f(x: Int) -> Int {\n    if (x > 0) {\n        return 1;\n    }\n    return 2;\n}\nf(0);\n",
+            "let a: Bool = true && false;\nlet b: Bool = true || false;\na;\n",
+            "fn inner(x: Int) -> Int {\n    return x * 2;\n}\nfn outer(y: Int) -> Int {\n    return inner(y) + 1;\n}\nouter(21);\n",
+            "let t: Tensor = tensor_fill(2, 2, 1.0);\ntensor_sum(t);\n",
+            "fn f() -> Int {\n    while (true) {\n        return 7;\n    }\n}\nf();\n",
+        ];
+        for source in sources {
+            let program = parse_document(source).expect("parses");
+            let module = compile_program(&program).expect("compiles");
+            validate_module(&module).unwrap_or_else(|errors| {
+                panic!("compiler output rejected for {source:?}: {errors:?}")
+            });
+        }
+    }
+
+    #[test]
+    fn nan_payload_survives_encode_round_trip() {
+        let mut chunk = Chunk::new();
+        let index = chunk
+            .add_constant(Constant::Float(f64::NAN))
+            .expect("nan constant");
+        chunk.write_op(OpCode::Constant, Span::default());
+        chunk.write_u16(index, Span::default());
+        chunk.write_op(OpCode::Return, Span::default());
+        let module = BytecodeModule {
+            functions: vec![FunctionBytecode {
+                name: "entry".to_string(),
+                arity: 0,
+                local_count: 0,
+                expects_return_value: false,
+                chunk,
+            }],
+            entry_function: 0,
+            globals: Vec::new(),
+        };
+
+        // Policy: float bits are preserved exactly, including NaN payloads.
+        let bytes = encode_bytecode_module(&module).expect("encode");
+        let decoded = decode_bytecode_module(&bytes).expect("decode");
+        match &decoded.functions[0].chunk.constants[0] {
+            Constant::Float(value) => assert_eq!(
+                value.to_bits(),
+                f64::NAN.to_bits(),
+                "NaN payload must round-trip bit-exactly"
+            ),
+            other => panic!("expected float constant, got {other:?}"),
         }
     }
 }

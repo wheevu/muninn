@@ -140,7 +140,13 @@ fn build_source(args: &[String]) {
     let source = read_source(source_path);
     match compile_to_bytecode(&source) {
         Ok(module) => {
-            let bytes = encode_bytecode_module(&module);
+            let bytes = match encode_bytecode_module(&module) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    eprintln!("failed to encode bytecode: {error}");
+                    std::process::exit(1);
+                }
+            };
             if let Err(error) = fs::write(&output_path, bytes) {
                 eprintln!(
                     "failed to write bytecode '{}': {}",
