@@ -32,7 +32,7 @@ The native path is deliberately narrow: traces are interpreted by the trace engi
 
 ## Global lookup cache
 
-The VM caches global reads by name for the current globals epoch. Defining or mutating a global, requesting/applying reload, or other runtime cache invalidation bumps the epoch; the invalidation counter records every epoch bump, even when the cache is already empty. This is a focused lookup cache, not a promised inline-cache optimization surface.
+The VM caches global reads by name for the current globals epoch. Defining or mutating a global evicts only that key; requesting/applying reload, or other full runtime cache invalidation, bumps the epoch and clears the cache. The invalidation counter records every eviction event, even when the evicted key or cache was already empty. This is a focused lookup cache, not a promised inline-cache optimization surface.
 
 ## Non-goals for now
 

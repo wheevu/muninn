@@ -80,3 +80,28 @@ value;
     assert_eq!(stats.hits, 0);
     assert_eq!(stats.invalidations, 2);
 }
+
+#[test]
+fn write_to_one_global_does_not_evict_another() {
+    let source = r#"
+let mut first: Int = 1;
+let second: Int = 2;
+first;
+second;
+first = 10;
+second;
+"#;
+    let mut vm = Vm::new(compile_to_bytecode(source).expect("module"));
+
+    let result = vm.run().expect("run");
+    let stats = vm.global_cache_stats();
+
+    assert_eq!(result.to_string(), "2");
+    // Two definitions (2 invalidations), two initial reads (2 misses),
+    // one write (1 invalidation evicting only `first`), then the final
+    // read of `second` is a hit. A whole-cache clear on write would
+    // turn that last read into a third miss.
+    assert_eq!(stats.misses, 2);
+    assert_eq!(stats.hits, 1);
+    assert_eq!(stats.invalidations, 3);
+}

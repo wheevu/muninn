@@ -30,6 +30,12 @@ pub struct Vm {
     pending_reload: Option<BytecodeModule>,
     preserve_existing_globals: bool,
     traces: Option<TraceEngine>,
+    /// First fatal execution fault, if any. Faulting instructions leave the
+    /// stack and frames mid-operation, so the VM cannot resume: later
+    /// `run`/`step_instruction` calls repeat this error instead of
+    /// cascading into misleading follow-on errors. A successful
+    /// `apply_pending_reload` starts a fresh program and clears it.
+    aborted: Option<MuninnError>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +48,9 @@ pub struct VmOptions {
 pub struct GlobalCacheStats {
     pub hits: usize,
     pub misses: usize,
-    /// Number of globals epoch bumps. Includes bumps when the cache is already empty.
+    /// Number of cache eviction events: single-key evictions on global
+    /// writes plus whole-cache clears on reload. Includes events where the
+    /// evicted key (or the whole cache) was already empty.
     pub invalidations: usize,
 }
 
@@ -87,6 +95,7 @@ impl Vm {
             traces: options
                 .jit_enabled
                 .then(|| TraceEngine::new(options.hot_loop_threshold)),
+            aborted: None,
             module,
         };
         vm.install_natives();
@@ -115,6 +124,9 @@ impl Vm {
     }
 
     pub fn run(&mut self) -> VmResult<Value> {
+        if let Some(error) = &self.aborted {
+            return Err(error.clone());
+        }
         self.ensure_started(Span::default())?;
         loop {
             if self.poll_safe_point() == ReloadStatus::Ready {
@@ -128,8 +140,15 @@ impl Vm {
     }
 
     pub fn step_instruction(&mut self) -> VmResult<Option<Value>> {
+        if let Some(error) = &self.aborted {
+            return Err(error.clone());
+        }
         self.ensure_started(Span::default())?;
-        self.execute_instruction()
+        let result = self.execute_instruction();
+        if let Err(error) = &result {
+            self.aborted = Some(error.clone());
+        }
+        result
     }
 
     pub fn request_reload(&mut self, module: BytecodeModule) -> VmResult<()> {
@@ -140,6 +159,10 @@ impl Vm {
     }
 
     pub fn poll_safe_point(&self) -> ReloadStatus {
+        // There is intentionally no execution budget here: a pending reload
+        // staged against a non-terminating nested call waits indefinitely
+        // (see the `top_level_loop_is_a_safe_point_but_nested_loop_is_not`
+        // test). Callers own that scheduling decision.
         if self.pending_reload.is_none() {
             ReloadStatus::Idle
         } else if self.is_safe_point() {
@@ -171,6 +194,7 @@ impl Vm {
         self.module = pending;
         self.invalidate_runtime_caches();
         self.started = false;
+        self.aborted = None;
         self.preserve_existing_globals = true;
         self.reserve_runtime_capacity(
             self.module.estimated_stack_capacity(),
@@ -281,8 +305,8 @@ impl Vm {
                     && self.globals.contains_key(&name)
                     && self.module.global_kind(&name) != Some(GlobalValueKind::Function);
                 if !preserve {
+                    self.evict_global_key(&name);
                     self.globals.insert(name, value);
-                    self.bump_globals_epoch();
                 }
             }
             OpCode::GetGlobal => {
@@ -296,8 +320,8 @@ impl Vm {
                 if !self.globals.contains_key(&name) {
                     return Err(vm_error(format!("unknown global '{}'", name), span));
                 }
+                self.evict_global_key(&name);
                 self.globals.insert(name, value);
-                self.bump_globals_epoch();
             }
             OpCode::Add => {
                 let right = self.pop(span)?;
@@ -432,6 +456,11 @@ impl Vm {
         self.frames.len() <= 1
     }
 
+    /// Rejects reloads that drop or retype live globals. Errors here
+    /// deliberately carry `Span::default`: this is a cross-module relation
+    /// and neither side retains a source location for a global (module
+    /// specs and runtime values are span-free), so the global name and
+    /// both kinds in the message are the location.
     fn validate_reload_compatibility(&self, next_module: &BytecodeModule) -> VmResult<()> {
         if next_module.entry_function >= next_module.functions.len() {
             return Err(vm_error(
@@ -648,6 +677,18 @@ impl Vm {
         if !self.global_cache.is_empty() {
             self.global_cache.clear();
         }
+    }
+
+    /// Evicts a single global from the lookup cache after a write.
+    ///
+    /// Unlike [`Vm::bump_globals_epoch`], which clears the whole cache on
+    /// reload, a write to one global must not evict unrelated globals:
+    /// read/write-interleaved loops (for example `acc = acc + val`) would
+    /// otherwise miss on every iteration. The invalidation counter still
+    /// records the event even when the key was not cached.
+    fn evict_global_key(&mut self, name: &str) {
+        self.global_cache.remove(name);
+        self.global_cache_stats.invalidations += 1;
     }
 
     fn invalidate_runtime_caches(&mut self) {

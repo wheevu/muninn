@@ -1,4 +1,5 @@
-use muninn::{analyze_document, compile_and_run};
+use muninn::vm::{ReloadStatus, Vm};
+use muninn::{analyze_document, compile_and_run, compile_to_bytecode};
 
 #[test]
 fn runs_small_typed_script() {
@@ -224,4 +225,37 @@ count();
 
     let value = compile_and_run(src).expect("value");
     assert_eq!(value.to_string(), "5");
+}
+
+#[test]
+fn runtime_fault_is_terminal_but_reload_recovers() {
+    let crashing = r#"
+let boom: Int = 10 / 0;
+boom;
+"#;
+    let mut vm = Vm::new(compile_to_bytecode(crashing).expect("module"));
+
+    let first = vm.run().expect_err("first run fails");
+    assert!(first.message.contains("division by zero"));
+
+    // The faulting instruction already mutated the stack, so resuming
+    // must repeat the original fault instead of cascading into a
+    // misleading follow-on error such as stack underflow.
+    let second = vm.run().expect_err("second run fails");
+    assert_eq!(second.message, first.message);
+
+    // Staging a fixed module recovers the VM: reload starts a fresh
+    // program while preserving existing globals by the usual rules.
+    let fixed = r#"
+let mut boom: Int = 0;
+boom = 7;
+boom;
+"#;
+    vm.request_reload(compile_to_bytecode(fixed).expect("fixed"))
+        .expect("request reload");
+    while vm.poll_safe_point() == ReloadStatus::Pending {
+        assert!(vm.step_instruction().expect("step").is_none());
+    }
+    vm.apply_pending_reload().expect("apply reload");
+    assert_eq!(vm.run().expect("run").to_string(), "7");
 }
