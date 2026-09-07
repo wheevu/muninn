@@ -70,6 +70,10 @@ impl SemanticModel {
     pub fn symbol_at_offset(&self, offset: usize) -> Option<&Symbol> {
         self.symbols
             .iter()
+            // Native builtins carry a synthetic span on line 0, which would
+            // otherwise match offset 0 and shadow whatever the file starts
+            // with. Only real source spans participate in lookup.
+            .filter(|symbol| symbol.span.line != 0)
             .filter(|symbol| symbol.span.contains_offset(offset))
             .min_by_key(|symbol| symbol.span.width().max(1))
     }
@@ -129,8 +133,22 @@ impl Analyzer {
 
     fn analyze(&mut self, program: &Program) {
         self.collect_functions(program);
+        let mut reached_terminal = false;
         for statement in &program.statements {
+            // Top-level statements run in order, and the language has no
+            // break or continue, so `while (true)` at the top level never
+            // exits. Mirror the block-level unreachable check for that one
+            // sound case (`return` outside a function is already its own
+            // error and must not trip this as well).
+            if reached_terminal {
+                self.error(statement.span, "unreachable statement".to_string());
+                continue;
+            }
             self.check_stmt(statement, true);
+            if matches!(&statement.kind, StmtKind::While { condition, .. } if matches!(condition.kind, ExprKind::Bool(true)))
+            {
+                reached_terminal = true;
+            }
         }
     }
 
@@ -274,24 +292,29 @@ impl Analyzer {
                             span: *name_span,
                             target: symbol_id,
                         });
-                        if !symbol.mutable {
-                            self.error(*name_span, format!("'{}' is not mutable", name));
-                        }
+                        // Functions are never assignable, so they report only
+                        // that. Merging the messages keeps one fault to one
+                        // diagnostic instead of also blaming immutability.
                         if matches!(
                             symbol.kind,
                             SymbolKind::Function | SymbolKind::NativeFunction(_)
                         ) {
                             self.error(*name_span, format!("cannot assign to '{}'", name));
-                        } else if !self.ty_compatible(&symbol.ty, &value_ty) {
-                            self.error(
-                                *name_span,
-                                format!(
-                                    "cannot assign {} to {} of type {}",
-                                    display_ty(&value_ty),
-                                    name,
-                                    display_ty(&symbol.ty)
-                                ),
-                            );
+                        } else {
+                            if !symbol.mutable {
+                                self.error(*name_span, format!("'{}' is not mutable", name));
+                            }
+                            if !self.ty_compatible(&symbol.ty, &value_ty) {
+                                self.error(
+                                    *name_span,
+                                    format!(
+                                        "cannot assign {} to {} of type {}",
+                                        display_ty(&value_ty),
+                                        name,
+                                        display_ty(&symbol.ty)
+                                    ),
+                                );
+                            }
                         }
                     }
                     None => {
@@ -589,9 +612,7 @@ impl Analyzer {
             other => {
                 let native_hint = if let ExprKind::Variable(name) = &callee.kind {
                     native_by_name(name)
-                        .map(|native| {
-                            format!(" (did you mean native function '{}'? )", native.name)
-                        })
+                        .map(|native| format!(" (did you mean native function '{}'?)", native.name))
                         .unwrap_or_default()
                 } else {
                     String::new()
