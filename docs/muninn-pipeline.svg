@@ -15,34 +15,34 @@
   <path d="M360 166 H408" fill="none" stroke="#88c0d0" stroke-width="2" marker-end="url(#arrow)"/>
   <path d="M572 166 H620" fill="none" stroke="#88c0d0" stroke-width="2" marker-end="url(#arrow)"/>
   <path d="M701 200 V226 H850 V250" fill="none" stroke="#88c0d0" stroke-width="2" marker-end="url(#arrow)"/>
-  <path d="M490 200 V250" fill="none" stroke="#8fbcbb" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M768 284 H572" fill="none" stroke="#8fbcbb" stroke-width="2" marker-end="url(#arrow)"/>
   <path d="M490 318 V340 H348 V360" fill="none" stroke="#88c0d0" stroke-width="2" marker-end="url(#arrow)"/>
   <path d="M490 318 V340 H632 V360" fill="none" stroke="#b9a7ff" stroke-width="2" marker-end="url(#arrow)"/>
 
   <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
     <rect x="62" y="132" width="136" height="68" rx="7" fill="#0f141b" stroke="#88c0d0"/>
-    <text x="92" y="161" fill="#88c0d0" font-size="13" font-weight="700">source .mun</text>
-    <text x="90" y="183" fill="#7f8ea3" font-size="12">fn gcd(...) {}</text>
+    <text x="87" y="161" fill="#88c0d0" font-size="13" font-weight="700">source .mun</text>
+    <text x="80" y="183" fill="#7f8ea3" font-size="12">fn gcd(...) {}</text>
 
     <rect x="244" y="132" width="116" height="68" rx="7" fill="#0f141b" stroke="#7f8ea3"/>
-    <text x="281" y="161" fill="#d8dee9" font-size="13" font-weight="700">lex</text>
-    <text x="271" y="183" fill="#7f8ea3" font-size="12">tokens</text>
+    <text x="290" y="161" fill="#d8dee9" font-size="13" font-weight="700">lex</text>
+    <text x="279" y="183" fill="#7f8ea3" font-size="12">tokens</text>
 
     <rect x="408" y="132" width="164" height="68" rx="7" fill="#0f141b" stroke="#7f8ea3"/>
-    <text x="466" y="161" fill="#d8dee9" font-size="13" font-weight="700">parse</text>
-    <text x="460" y="183" fill="#7f8ea3" font-size="12">AST</text>
+    <text x="470" y="161" fill="#d8dee9" font-size="13" font-weight="700">parse</text>
+    <text x="478" y="183" fill="#7f8ea3" font-size="12">AST</text>
 
     <rect x="620" y="132" width="162" height="68" rx="7" fill="#0f141b" stroke="#d9b86c"/>
-    <text x="654" y="161" fill="#d9b86c" font-size="13" font-weight="700">type check</text>
+    <text x="662" y="161" fill="#d9b86c" font-size="13" font-weight="700">type check</text>
     <text x="654" y="183" fill="#7f8ea3" font-size="12">typed program</text>
 
     <rect x="768" y="250" width="164" height="68" rx="7" fill="#0f141b" stroke="#8fbcbb"/>
-    <text x="802" y="279" fill="#8fbcbb" font-size="13" font-weight="700">bytecode</text>
+    <text x="819" y="279" fill="#8fbcbb" font-size="13" font-weight="700">bytecode</text>
     <text x="806" y="301" fill="#7f8ea3" font-size="12">.mubc module</text>
 
     <rect x="408" y="250" width="164" height="68" rx="7" fill="#0f141b" stroke="#8fbcbb"/>
-    <text x="464" y="279" fill="#8fbcbb" font-size="13" font-weight="700">VM</text>
-    <text x="434" y="301" fill="#7f8ea3" font-size="12">stack runtime</text>
+    <text x="482" y="279" fill="#8fbcbb" font-size="13" font-weight="700">VM</text>
+    <text x="440" y="301" fill="#7f8ea3" font-size="12">stack runtime</text>
 
     <rect x="266" y="360" width="164" height="46" rx="7" fill="#0f141b" stroke="#88c0d0"/>
     <text x="302" y="389" fill="#88c0d0" font-size="13" font-weight="700">interpreter</text>

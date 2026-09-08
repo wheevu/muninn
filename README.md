@@ -17,7 +17,7 @@ The same program can run through the interpreter, bytecode path, hot-reload runt
 | Scalar loop, VM only | 354 µs/op |
 | Tensor pipeline, compile and run | 32 µs/op |
 
-Apple M1, Rust 1.97.1, release mode, commit `e154224` plus uncommitted working tree.
+Apple M1, Rust 1.97.1, release mode, commit `d70836e`.
 These are local wall-clock measurements from `muninn-metrics`, not portable latency claims.
 
 ![Muninn runtime modes](docs/runtime-modes.svg)
