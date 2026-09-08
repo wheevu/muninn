@@ -3,6 +3,7 @@ pub mod autodiff;
 pub mod bytecode;
 pub mod compiler;
 pub mod error;
+pub mod format;
 pub mod frontend;
 pub mod jit;
 pub mod lexer;
@@ -23,8 +24,10 @@ pub use bytecode::{
     BytecodeDecodeError, BytecodeModule, GlobalSpec, GlobalValueKind, decode_bytecode_module,
     encode_bytecode_module,
 };
+pub use format::format_source;
 pub use frontend::{
-    FrontendAnalysis, analyze_document, check_document, lex_document, parse_document,
+    FrontendAnalysis, analyze_document, check_document, is_rename_identifier, lex_document,
+    parse_document, references_to_target,
 };
 pub use tensor::Tensor;
 pub use typecheck::{SemanticModel, Symbol, SymbolKind, Ty};

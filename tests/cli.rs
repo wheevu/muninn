@@ -241,3 +241,44 @@ value + 3;
     assert!(!run.status.success());
     assert!(String::from_utf8_lossy(&run.stderr).contains("bytecode error"));
 }
+
+#[test]
+fn fmt_reformats_in_place_and_check_passes_after() {
+    let path = write_temp_source("let x: Int = 1;   \n");
+
+    let format = Command::new(env!("CARGO_BIN_EXE_muninn"))
+        .arg("fmt")
+        .arg(&path)
+        .output()
+        .expect("run muninn fmt");
+    assert!(format.status.success());
+    assert_eq!(
+        fs::read_to_string(&path).expect("read back"),
+        "let x: Int = 1;\n"
+    );
+
+    let check = Command::new(env!("CARGO_BIN_EXE_muninn"))
+        .arg("fmt")
+        .arg("--check")
+        .arg(&path)
+        .output()
+        .expect("run muninn fmt --check");
+    let _ = fs::remove_file(&path);
+    assert!(check.status.success());
+}
+
+#[test]
+fn fmt_check_fails_on_unformatted_source() {
+    let path = write_temp_source("let x: Int = 1;   \n");
+
+    let check = Command::new(env!("CARGO_BIN_EXE_muninn"))
+        .arg("fmt")
+        .arg("--check")
+        .arg(&path)
+        .output()
+        .expect("run muninn fmt --check");
+    let _ = fs::remove_file(&path);
+
+    assert!(!check.status.success());
+    assert!(String::from_utf8_lossy(&check.stderr).contains("would reformat"));
+}

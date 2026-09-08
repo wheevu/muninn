@@ -2,6 +2,7 @@ use crate::ast::Program;
 use crate::error::MuninnError;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
+use crate::span::Span;
 use crate::token::Token;
 use crate::typecheck::{Reference, SemanticModel, Symbol, analyze_program, check_program};
 
@@ -32,6 +33,42 @@ impl FrontendAnalysis {
     pub fn reference_at_offset(&self, offset: usize) -> Option<&Reference> {
         self.semantics.as_ref()?.reference_at_offset(offset)
     }
+}
+
+/// All spans naming symbol `target`: the definition span first (when it is a
+/// real source span; native builtins carry a synthetic line-0 span), then
+/// every reference span. Powers LSP references, rename, and document
+/// highlight without text matching, so shadowed locals and same-named
+/// symbols in other functions stay distinct.
+pub fn references_to_target(analysis: &FrontendAnalysis, target: usize) -> Vec<Span> {
+    let mut spans = Vec::new();
+    let Some(semantics) = analysis.semantics.as_ref() else {
+        return spans;
+    };
+    if let Some(symbol) = semantics.symbol_by_id(target)
+        && symbol.span.line != 0
+    {
+        spans.push(symbol.span);
+    }
+    spans.extend(
+        semantics
+            .references
+            .iter()
+            .filter(|reference| reference.target == target)
+            .map(|reference| reference.span),
+    );
+    spans
+}
+
+/// Returns true when `name` is a plain Muninn identifier and therefore a
+/// valid rename target.
+pub fn is_rename_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => (),
+        _ => return false,
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 pub fn lex_document(source: &str) -> Result<Vec<Token>, Vec<MuninnError>> {

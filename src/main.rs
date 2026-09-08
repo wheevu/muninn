@@ -3,7 +3,8 @@ use std::{env, fs};
 
 use muninn::{
     BytecodeDecodeError, analyze_document, compile_to_bytecode, decode_bytecode_module,
-    encode_bytecode_module, run_bytecode_module, run_bytecode_module_with_options, vm::VmOptions,
+    encode_bytecode_module, format_source, run_bytecode_module, run_bytecode_module_with_options,
+    vm::VmOptions,
 };
 
 const DEMO_PROGRAM: &str = r#"
@@ -25,6 +26,7 @@ const USAGE: &str = "Usage:
   muninn check <file>
   muninn build <file> [-o output.mubc]
   muninn run-bc [--jit] [--jit-threshold N] <file.mubc>
+  muninn fmt [--check] <file>
   muninn [--jit] [--jit-threshold N] <file>
   muninn --help";
 
@@ -52,6 +54,7 @@ fn main() {
             check_source(&read_source(path));
         }
         "build" => build_source(&args),
+        "fmt" => format_source_command(&args),
         "run-bc" => {
             let (options, paths) = parse_run_options(&args, "run-bc");
             let path = expect_single_path(&paths, "run-bc");
@@ -171,6 +174,44 @@ fn default_bytecode_output_path(source_path: &str) -> PathBuf {
     let mut output = path.to_path_buf();
     output.set_extension("mubc");
     output
+}
+
+/// Formats a source file in place. With `--check`, reports whether the
+/// file is already formatted instead of writing.
+fn format_source_command(args: &[String]) {
+    let mut check = false;
+    let mut paths = Vec::new();
+    for arg in args {
+        if arg == "--check" {
+            check = true;
+        } else if arg.starts_with("--") {
+            eprintln!("unknown option '{}' for command 'fmt'", arg);
+            eprintln!("{}", USAGE);
+            std::process::exit(1);
+        } else {
+            paths.push(arg.clone());
+        }
+    }
+    if paths.len() != 1 {
+        eprintln!("missing source file for command 'fmt'");
+        eprintln!("{}", USAGE);
+        std::process::exit(1);
+    }
+    let source = read_source(&paths[0]);
+    let formatted = format_source(&source);
+    if formatted == source {
+        println!("{}: already formatted", paths[0]);
+        return;
+    }
+    if check {
+        eprintln!("{}: would reformat", paths[0]);
+        std::process::exit(1);
+    }
+    if let Err(error) = fs::write(&paths[0], formatted) {
+        eprintln!("failed to write '{}': {}", paths[0], error);
+        std::process::exit(1);
+    }
+    println!("{}", paths[0]);
 }
 
 fn read_source(path: &str) -> String {

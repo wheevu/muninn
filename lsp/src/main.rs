@@ -53,6 +53,19 @@ impl Backend {
             backend.update_document(uri, version, source).await;
         });
     }
+
+    /// Resolves the symbol id under the cursor, whether the cursor sits on
+    /// the definition or on a reference site.
+    async fn target_at(
+        &self,
+        uri: &Url,
+        position: Position,
+    ) -> Option<(Arc<DocumentState>, usize)> {
+        let doc = self.document(uri).await?;
+        let offset = doc.offset_at(position.line, position.character)?;
+        let target = doc.analysis.definition_at_offset(offset)?.id;
+        Some((doc, target))
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -65,6 +78,13 @@ impl LanguageServer for Backend {
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
+                document_symbol_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                })),
+                document_highlight_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -167,6 +187,158 @@ impl LanguageServer for Backend {
             uri,
             range: span_to_range(&doc.source, &doc.line_starts, symbol.span),
         })))
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri.clone();
+        let position = params.text_document_position.position;
+        let Some((doc, target)) = self.target_at(&uri, position).await else {
+            return Ok(None);
+        };
+        let definition_span = doc
+            .analysis
+            .semantics
+            .as_ref()
+            .and_then(|semantics| semantics.symbol_by_id(target))
+            .map(|symbol| symbol.span);
+        let mut locations = Vec::new();
+        for span in muninn::references_to_target(&doc.analysis, target) {
+            if Some(span) == definition_span && !params.context.include_declaration {
+                continue;
+            }
+            locations.push(Location {
+                uri: uri.clone(),
+                range: span_to_range(&doc.source, &doc.line_starts, span),
+            });
+        }
+        Ok(Some(locations))
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let Some(doc) = self.document(&params.text_document.uri).await else {
+            return Ok(None);
+        };
+        let Some(semantics) = doc.analysis.semantics.as_ref() else {
+            return Ok(None);
+        };
+        let symbols = semantics
+            .symbols
+            .iter()
+            // Native builtins carry a synthetic line-0 span, not a document
+            // location, so they never appear as document symbols.
+            .filter(|symbol| symbol.span.line != 0)
+            .map(|symbol| SymbolInformation {
+                name: symbol.name.clone(),
+                kind: match symbol.kind {
+                    muninn::typecheck::SymbolKind::Function => SymbolKind::FUNCTION,
+                    muninn::typecheck::SymbolKind::NativeFunction(_) => SymbolKind::FUNCTION,
+                    _ => SymbolKind::VARIABLE,
+                },
+                tags: None,
+                #[allow(deprecated)]
+                deprecated: None,
+                location: Location {
+                    uri: params.text_document.uri.clone(),
+                    range: span_to_range(&doc.source, &doc.line_starts, symbol.span),
+                },
+                container_name: None,
+            })
+            .collect();
+        Ok(Some(DocumentSymbolResponse::Flat(symbols)))
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let uri = params.text_document.uri.clone();
+        let position = params.position;
+        let Some((doc, target)) = self.target_at(&uri, position).await else {
+            return Ok(None);
+        };
+        let Some(semantics) = doc.analysis.semantics.as_ref() else {
+            return Ok(None);
+        };
+        let Some(symbol) = semantics.symbol_by_id(target) else {
+            return Ok(None);
+        };
+        if symbol.span.line == 0 {
+            // Native builtins have no document location to rename.
+            return Ok(None);
+        }
+        Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+            range: span_to_range(&doc.source, &doc.line_starts, symbol.span),
+            placeholder: symbol.name.clone(),
+        }))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        if !muninn::is_rename_identifier(&params.new_name) {
+            return Ok(None);
+        }
+        let uri = params.text_document_position.text_document.uri.clone();
+        let position = params.text_document_position.position;
+        let Some((doc, target)) = self.target_at(&uri, position).await else {
+            return Ok(None);
+        };
+        if doc
+            .analysis
+            .semantics
+            .as_ref()
+            .and_then(|semantics| semantics.symbol_by_id(target))
+            .is_none_or(|symbol| symbol.span.line == 0)
+        {
+            return Ok(None);
+        }
+        let edits = muninn::references_to_target(&doc.analysis, target)
+            .into_iter()
+            .map(|span| TextEdit {
+                range: span_to_range(&doc.source, &doc.line_starts, span),
+                new_text: params.new_name.clone(),
+            })
+            .collect();
+        let mut changes = std::collections::HashMap::new();
+        changes.insert(uri, edits);
+        Ok(Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }))
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> Result<Option<Vec<DocumentHighlight>>> {
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .clone();
+        let position = params.text_document_position_params.position;
+        let Some((doc, target)) = self.target_at(&uri, position).await else {
+            return Ok(None);
+        };
+        let definition_span = doc
+            .analysis
+            .semantics
+            .as_ref()
+            .and_then(|semantics| semantics.symbol_by_id(target))
+            .map(|symbol| symbol.span);
+        let highlights = muninn::references_to_target(&doc.analysis, target)
+            .into_iter()
+            .map(|span| DocumentHighlight {
+                range: span_to_range(&doc.source, &doc.line_starts, span),
+                kind: Some(if Some(span) == definition_span {
+                    DocumentHighlightKind::WRITE
+                } else {
+                    DocumentHighlightKind::READ
+                }),
+            })
+            .collect();
+        Ok(Some(highlights))
     }
 }
 
