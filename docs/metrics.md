@@ -1,6 +1,6 @@
 | metric | value |
 |---|---:|
-| workspace tests | 193 |
+| workspace tests | 233 |
 | benchmark targets | 6 |
 | example programs | 4 |
 | `dsa_euclid.mun` source | 691 B |
@@ -9,6 +9,6 @@
 | `tensor_pipeline.mun` bytecode | 3.6 KB |
 | `perceptron.mun` source | 204 B |
 | `perceptron.mun` bytecode | 1.7 KB |
-| scalar loop compile + run | 400 µs/op |
-| scalar loop VM only | 354 µs/op |
-| tensor pipeline compile + run | 32 µs/op |
+| scalar loop compile + run | 580 µs/op |
+| scalar loop VM only | 562 µs/op |
+| tensor pipeline compile + run | 55 µs/op |

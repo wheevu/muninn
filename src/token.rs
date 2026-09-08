@@ -39,6 +39,7 @@ pub enum TokenKind {
     Return,
     While,
     Record,
+    Import,
     True,
     False,
     TypeInt,

@@ -5,7 +5,9 @@ use crate::error::MuninnError;
 use crate::span::Span;
 
 const MUBC_MAGIC: &[u8; 4] = b"MUBC";
-const MUBC_VERSION: u16 = 1;
+/// Bytecode artifact version. Compatibility is narrow by policy:
+/// same-version artifacts only, opcode numbers never reused.
+pub const MUBC_VERSION: u16 = 1;
 const MAX_DECODE_ITEMS: usize = 1_000_000;
 const MAX_BYTE_ARRAY_LENGTH: usize = 1_048_576; // 1 MiB
 

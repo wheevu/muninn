@@ -1,0 +1,7 @@
+fn shout(text: String) -> String {
+    return text + "!";
+}
+
+fn greet_lines(count: Int) -> Int {
+    return count + 1;
+}

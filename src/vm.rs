@@ -6,8 +6,8 @@ use crate::bytecode::{BytecodeModule, Chunk, Constant, GlobalValueKind, OpCode, 
 use crate::error::MuninnError;
 use crate::jit::{JitBackend, TraceEngine, TraceKey, TraceOutcome, TraceStats};
 use crate::native::{
-    NativeFunctionKind, add_values, divide_values, invoke_native_with_limit, multiply_values,
-    native_name, registered_natives, subtract_values,
+    HostCaps, NativeFunctionKind, add_values, divide_values, invoke_native_with_limit,
+    multiply_values, native_name, registered_natives, subtract_values,
 };
 use crate::runtime::{VmResult, vm_error};
 use crate::span::Span;
@@ -77,6 +77,22 @@ pub struct HostPolicy {
     /// values) and `SetGlobal` always traps. Fresh `DefineGlobal` bindings
     /// are still allowed.
     pub readonly_globals: bool,
+    /// Script arguments visible to `args_len`/`args_get`. Empty by
+    /// default; the CLI fills this from arguments after the entry file.
+    pub argv: Vec<String>,
+    /// Env names visible to `env_get`/`env_has`. `None` allows every name
+    /// (trusted CLI default); `Some(set)` allows only names in the set.
+    /// Denied names trap with a policy diagnostic; allowed-but-missing
+    /// names report `false` from `env_has` and trap from `env_get`.
+    pub allowed_env: Option<HashSet<String>>,
+    /// Filesystem root scoping `fs_read`/`fs_exists`/`fs_write`. `None`
+    /// denies all filesystem access (fail closed, even under `default()`:
+    /// the IO surface is new, so there is no legacy behavior to preserve).
+    /// `Some(root)` allows relative paths that resolve under `root`.
+    pub fs_root: Option<std::path::PathBuf>,
+    /// Piped stdin content visible to `stdin_read`. Empty by default; the
+    /// CLI fills it when stdin is not a terminal.
+    pub stdin_data: String,
 }
 
 /// Built-in tensor element limit from `tensor.rs`; the host default.
@@ -95,6 +111,10 @@ impl HostPolicy {
             max_tensor_elements: DEFAULT_MAX_TENSOR_ELEMENTS,
             allowed_natives: Some(HashSet::new()),
             readonly_globals: false,
+            argv: Vec::new(),
+            allowed_env: Some(HashSet::new()),
+            fs_root: None,
+            stdin_data: String::new(),
         }
     }
 
@@ -122,6 +142,59 @@ impl HostPolicy {
             .as_ref()
             .is_none_or(|set| set.contains(&kind))
     }
+
+    /// Explicitly allows one env name for `env_get`/`env_has`. Converts
+    /// an allow-all policy into an allowlist containing just `name`.
+    pub fn allow_env(&mut self, name: impl Into<String>) {
+        match &mut self.allowed_env {
+            Some(set) => {
+                set.insert(name.into());
+            }
+            None => {
+                let mut set = HashSet::new();
+                set.insert(name.into());
+                self.allowed_env = Some(set);
+            }
+        }
+    }
+
+    /// Allows every env name (restores the trusted-CLI default).
+    pub fn allow_all_env(&mut self) {
+        self.allowed_env = None;
+    }
+
+    /// Shrinks the ambient surface after startup: read config, then drop
+    /// filesystem access so later script code cannot reach it.
+    pub fn revoke_fs(&mut self) {
+        self.fs_root = None;
+    }
+
+    /// Grants script arguments visible to `args_len`/`args_get`.
+    pub fn set_argv(&mut self, argv: Vec<String>) {
+        self.argv = argv;
+    }
+
+    /// Scopes filesystem builtins under `root`.
+    pub fn set_fs_root(&mut self, root: std::path::PathBuf) {
+        self.fs_root = Some(root);
+    }
+
+    /// Seeds piped stdin content visible to `stdin_read`.
+    pub fn set_stdin(&mut self, data: String) {
+        self.stdin_data = data;
+    }
+
+    /// Builds the per-call capability view for native dispatch. The VM
+    /// stays the isolation boundary: one `Vm` per guest, budgets and
+    /// capabilities never shared across VMs.
+    fn host_caps(&self) -> HostCaps<'_> {
+        HostCaps {
+            argv: &self.argv,
+            allowed_env: &self.allowed_env,
+            fs_root: &self.fs_root,
+            stdin_data: &self.stdin_data,
+        }
+    }
 }
 
 impl Default for HostPolicy {
@@ -132,6 +205,10 @@ impl Default for HostPolicy {
             max_tensor_elements: DEFAULT_MAX_TENSOR_ELEMENTS,
             allowed_natives: None,
             readonly_globals: false,
+            argv: Vec::new(),
+            allowed_env: None,
+            fs_root: None,
+            stdin_data: String::new(),
         }
     }
 }
@@ -766,11 +843,13 @@ impl Vm {
                     ));
                 }
                 let max_elements = self.policy.max_tensor_elements;
+                let caps = self.policy.host_caps();
                 let result = invoke_native_with_limit(
                     kind,
                     &self.stack[callee_index + 1..],
                     span,
                     max_elements,
+                    &caps,
                 )?;
                 self.stack.truncate(callee_index);
                 self.stack.push(result);

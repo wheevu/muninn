@@ -48,6 +48,9 @@ impl Parser {
         if self.match_simple(&TokenKind::Record) {
             return self.parse_record_declaration();
         }
+        if self.match_simple(&TokenKind::Import) {
+            return self.parse_import_statement();
+        }
         self.parse_statement(false)
     }
 
@@ -75,6 +78,13 @@ impl Parser {
             return Err(MuninnError::new(
                 "parser",
                 "record declarations must be top-level",
+                self.previous().span,
+            ));
+        }
+        if self.match_simple(&TokenKind::Import) {
+            return Err(MuninnError::new(
+                "parser",
+                "import statements must be top-level",
                 self.previous().span,
             ));
         }
@@ -172,6 +182,27 @@ impl Parser {
                 fields,
                 span,
             }),
+            span,
+        })
+    }
+
+    fn parse_import_statement(&mut self) -> Result<Stmt, MuninnError> {
+        let start = self.previous().span;
+        let token = self.advance().clone();
+        let TokenKind::StringLiteral(path) = token.kind else {
+            return Err(MuninnError::new(
+                "parser",
+                "expected a string literal path after 'import' (for example: import \"./util.mun\";)",
+                token.span,
+            ));
+        };
+        let end_span = self
+            .consume_simple(&TokenKind::Semicolon, "expected ';' after import path")?
+            .span;
+        let span = start.merge(end_span);
+        Ok(Stmt {
+            id: self.alloc_id(),
+            kind: StmtKind::Import { path, span },
             span,
         })
     }
@@ -687,6 +718,7 @@ impl Parser {
                 | TokenKind::If
                 | TokenKind::Fn
                 | TokenKind::Record
+                | TokenKind::Import
         ) || self.is_assignment_statement()
     }
 
@@ -752,7 +784,8 @@ impl Parser {
                 | TokenKind::Let
                 | TokenKind::Return
                 | TokenKind::If
-                | TokenKind::While => return,
+                | TokenKind::While
+                | TokenKind::Import => return,
                 _ => {
                     self.current += 1;
                 }
@@ -945,6 +978,45 @@ while (total < 3) {
             errors
                 .iter()
                 .any(|error| error.message.contains("must be top-level"))
+        );
+    }
+
+    #[test]
+    fn parses_top_level_import() {
+        let src = "import \"./util.mun\";\nlet x: Int = 1;";
+        let tokens = Lexer::new(src).lex().expect("tokens");
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().expect("program");
+        assert_eq!(program.statements.len(), 2);
+        let StmtKind::Import { path, .. } = &program.statements[0].kind else {
+            panic!("expected import");
+        };
+        assert_eq!(path, "./util.mun");
+    }
+
+    #[test]
+    fn rejects_nested_imports() {
+        let src = "fn f() -> Int { import \"./util.mun\"; return 1; }";
+        let tokens = Lexer::new(src).lex().expect("tokens");
+        let mut parser = Parser::new(tokens);
+        let errors = parser.parse_program().expect_err("errors");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("must be top-level"))
+        );
+    }
+
+    #[test]
+    fn rejects_non_string_import_paths() {
+        let src = "import util;";
+        let tokens = Lexer::new(src).lex().expect("tokens");
+        let mut parser = Parser::new(tokens);
+        let errors = parser.parse_program().expect_err("errors");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("string literal path"))
         );
     }
 }

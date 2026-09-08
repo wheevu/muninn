@@ -223,6 +223,7 @@ impl<'a> Lexer<'a> {
             "return" => TokenKind::Return,
             "while" => TokenKind::While,
             "record" => TokenKind::Record,
+            "import" => TokenKind::Import,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             "Int" => TokenKind::TypeInt,
@@ -370,5 +371,12 @@ mod tests {
                 .iter()
                 .any(|error| error.message.contains("invalid integer literal"))
         );
+    }
+
+    #[test]
+    fn lexes_import_keyword() {
+        let tokens = Lexer::new("import \"./util.mun\";").lex().expect("tokens");
+        assert!(matches!(tokens[0].kind, TokenKind::Import));
+        assert!(matches!(tokens[1].kind, TokenKind::StringLiteral(_)));
     }
 }

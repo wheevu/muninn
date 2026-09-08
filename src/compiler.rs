@@ -156,6 +156,11 @@ impl ModuleCompiler {
             // Record declarations carry no runtime code: construction
             // happens at each `RecordLit` site.
             StmtKind::Record(_) => {}
+            // Imports are expanded by the file loader before compilation.
+            // Reaching the compiler means single-file compilation already
+            // reported a typecheck error; emit nothing rather than running
+            // partial code.
+            StmtKind::Import { .. } => {}
             StmtKind::Return(value) => {
                 if let Some(value) = value {
                     self.compile_expr(compiler, value);

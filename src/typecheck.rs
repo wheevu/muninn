@@ -335,6 +335,18 @@ impl Analyzer {
                     );
                 }
             }
+            StmtKind::Import { path, .. } => {
+                // The file loader expands imports before analysis, so an
+                // import reaching the typechecker means single-file
+                // compilation (REPL, embed, `compile_to_bytecode`). Fail
+                // intentionally with the fix, never silently ignore it.
+                self.error(
+                    stmt.span,
+                    format!(
+                        "import of \"{path}\" requires file-based loading (run a file with `muninn run <file>`)",
+                    ),
+                );
+            }
             StmtKind::Return(value) => {
                 if !self.inside_function {
                     self.error(

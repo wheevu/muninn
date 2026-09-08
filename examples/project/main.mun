@@ -1,0 +1,13 @@
+import "./util.mun";
+
+let greeting: String = shout("hello");
+print(greeting);
+print(args_len());
+if (args_len() > 0) {
+    print(args_get(0));
+}
+let body: String = fs_read("data.txt");
+print(body);
+print(env_has("PATH"));
+print(greet_lines(41));
+greeting;

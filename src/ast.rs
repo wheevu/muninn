@@ -26,6 +26,13 @@ pub enum StmtKind {
     },
     Function(FunctionDecl),
     Record(RecordDecl),
+    /// A sibling import: `import "./util.mun";`. Top-level only. The
+    /// loader resolves it before analysis; single-file compilation
+    /// rejects it with an actionable diagnostic.
+    Import {
+        path: String,
+        span: Span,
+    },
     Return(Option<Expr>),
     While {
         condition: Expr,
