@@ -83,13 +83,48 @@ impl From<MuninnError> for AutodiffError {
 enum Operation {
     Variable,
     Constant,
-    Add { left: NodeId, right: NodeId },
-    Subtract { left: NodeId, right: NodeId },
-    Multiply { left: NodeId, right: NodeId },
-    Negate { input: NodeId },
-    Matmul { left: NodeId, right: NodeId },
-    Sum { input: NodeId },
-    SumAxis { input: NodeId, axis: usize },
+    Add {
+        left: NodeId,
+        right: NodeId,
+    },
+    Subtract {
+        left: NodeId,
+        right: NodeId,
+    },
+    Multiply {
+        left: NodeId,
+        right: NodeId,
+    },
+    Negate {
+        input: NodeId,
+    },
+    Matmul {
+        left: NodeId,
+        right: NodeId,
+    },
+    Sum {
+        input: NodeId,
+    },
+    SumAxis {
+        input: NodeId,
+        axis: usize,
+    },
+    /// Logistic sigmoid applied element by element.
+    Sigmoid {
+        input: NodeId,
+    },
+    /// Stable mean binary cross-entropy from logits. The target is read from
+    /// the recorded value and treated as a constant: no gradient flows to it.
+    BceWithLogits {
+        input: NodeId,
+        target: NodeId,
+    },
+    /// Mean softmax cross-entropy from rank-2 logits `[batch, classes]` with
+    /// class-index targets of shape `[batch]`. Targets are constants.
+    CrossEntropy {
+        logits: NodeId,
+        targets: NodeId,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -226,6 +261,49 @@ impl TensorExpr {
             Operation::SumAxis {
                 input: self.node,
                 axis,
+            },
+            value,
+        ))
+    }
+
+    /// Applies the logistic sigmoid element by element, shape preserving.
+    ///
+    /// The forward pass uses the stable branch `1 / (1 + exp(-x))` for
+    /// `x >= 0` and `exp(x) / (1 + exp(x))` otherwise.
+    pub fn sigmoid(&self) -> Result<Self, AutodiffError> {
+        let value = sigmoid_tensor(&self.value())?;
+        Ok(self.push(Operation::Sigmoid { input: self.node }, value))
+    }
+
+    /// Stable mean binary cross-entropy with logits.
+    ///
+    /// Both sides must share the same shape. Returns a scalar loss with
+    /// shape `[]`. The target is treated as a constant label: `grad` flows
+    /// only to the logits side.
+    pub fn bce_with_logits(&self, target: &Self) -> Result<Self, AutodiffError> {
+        self.ensure_same_graph(target)?;
+        let value = bce_with_logits_tensor(&self.value(), &target.value())?;
+        Ok(self.push(
+            Operation::BceWithLogits {
+                input: self.node,
+                target: target.node,
+            },
+            value,
+        ))
+    }
+
+    /// Mean softmax cross-entropy from logits.
+    ///
+    /// `self` must be rank-2 `[batch, classes]` and `target` must have shape
+    /// `[batch]` holding class indices. Returns a scalar loss with shape
+    /// `[]`. Targets are constant labels: `grad` flows only to the logits.
+    pub fn cross_entropy_logits(&self, target: &Self) -> Result<Self, AutodiffError> {
+        self.ensure_same_graph(target)?;
+        let value = cross_entropy_tensor(&self.value(), &target.value())?;
+        Ok(self.push(
+            Operation::CrossEntropy {
+                logits: self.node,
+                targets: target.node,
             },
             value,
         ))
@@ -492,6 +570,48 @@ pub fn grad(loss: &TensorExpr, variable: &Variable) -> Result<Tensor, AutodiffEr
                     broadcast_after_axis(&upstream, &input_shape, axis)?,
                 )?;
             }
+            Operation::Sigmoid { input } => {
+                let output = node_value(&graph.nodes, node_id)?;
+                let input_value = node_value(&graph.nodes, input)?;
+                let scaled = tensor_binary(
+                    &upstream,
+                    output,
+                    Span::default(),
+                    "autodiff sigmoid gradient",
+                    |gradient, probability| gradient * probability * (1.0 - probability),
+                )?;
+                accumulate(
+                    &mut gradients,
+                    input,
+                    reduce_to_shape(&scaled, input_value.shape(), "sigmoid gradient")?,
+                )?;
+            }
+            Operation::BceWithLogits { input, target } => {
+                let input_value = node_value(&graph.nodes, input)?;
+                let target_value = node_value(&graph.nodes, target)?;
+                let upstream_scalar = scalar_value(&upstream, "bce_with_logits gradient")?;
+                let count = input_value.data().len().max(1) as f64;
+                let data = input_value
+                    .data()
+                    .iter()
+                    .zip(target_value.data().iter())
+                    .map(|(logit, label)| {
+                        upstream_scalar * (sigmoid_scalar(*logit) - *label) / count
+                    })
+                    .collect::<Vec<_>>();
+                let contribution =
+                    Tensor::from_data(input_value.shape().to_vec(), data, Span::default())
+                        .map_err(AutodiffError::from)?;
+                accumulate(&mut gradients, input, contribution)?;
+            }
+            Operation::CrossEntropy { logits, targets } => {
+                let logits_value = node_value(&graph.nodes, logits)?;
+                let targets_value = node_value(&graph.nodes, targets)?;
+                let upstream_scalar = scalar_value(&upstream, "cross_entropy gradient")?;
+                let contribution =
+                    cross_entropy_grad(logits_value, targets_value, upstream_scalar)?;
+                accumulate(&mut gradients, logits, contribution)?;
+            }
         }
     }
 
@@ -726,6 +846,147 @@ fn broadcast_after_axis(
     broadcast_to_shape(&expanded, target_shape, "sum_axis gradient")
 }
 
+fn sigmoid_scalar(value: f64) -> f64 {
+    if value >= 0.0 {
+        1.0 / (1.0 + (-value).exp())
+    } else {
+        let exp = value.exp();
+        exp / (1.0 + exp)
+    }
+}
+
+fn sigmoid_tensor(tensor: &Tensor) -> Result<Tensor, AutodiffError> {
+    Tensor::from_data(
+        tensor.shape().to_vec(),
+        tensor
+            .data()
+            .iter()
+            .map(|value| sigmoid_scalar(*value))
+            .collect(),
+        Span::default(),
+    )
+    .map_err(AutodiffError::from)
+}
+
+/// Stable elementwise binary cross-entropy with logits, averaged to scalar.
+fn bce_with_logits_tensor(logits: &Tensor, targets: &Tensor) -> Result<Tensor, AutodiffError> {
+    if logits.shape() != targets.shape() {
+        return Err(shape_error(
+            "bce_with_logits",
+            logits.shape(),
+            targets.shape(),
+            "logits and targets must share the same shape",
+        ));
+    }
+    let mut total = 0.0;
+    for (logit, label) in logits.data().iter().zip(targets.data().iter()) {
+        if !label.is_finite() || (*label != 0.0 && *label != 1.0) {
+            return Err(AutodiffError::new(
+                AutodiffErrorKind::Runtime,
+                "bce_with_logits targets must be 0.0 or 1.0",
+            ));
+        }
+        // Stable form: max(x, 0) - x * z + log(1 + exp(-|x|)).
+        total += logit.max(0.0) - logit * label + (1.0 + (-logit.abs()).exp()).ln();
+    }
+    let count = logits.data().len().max(1) as f64;
+    Ok(Tensor::scalar(total / count))
+}
+
+fn cross_entropy_tensor(logits: &Tensor, targets: &Tensor) -> Result<Tensor, AutodiffError> {
+    let (batch, classes) = cross_entropy_shapes(logits, targets)?;
+    let mut total = 0.0;
+    for row in 0..batch {
+        let base = row * classes;
+        let max = logits.data()[base..base + classes]
+            .iter()
+            .fold(f64::NEG_INFINITY, |best, value| best.max(*value));
+        let denominator: f64 = logits.data()[base..base + classes]
+            .iter()
+            .map(|value| (value - max).exp())
+            .sum();
+        let class = targets.data()[row] as usize;
+        total += max + denominator.ln() - logits.data()[base + class];
+    }
+    Ok(Tensor::scalar(total / batch as f64))
+}
+
+fn cross_entropy_grad(
+    logits: &Tensor,
+    targets: &Tensor,
+    upstream: f64,
+) -> Result<Tensor, AutodiffError> {
+    let (batch, classes) = cross_entropy_shapes(logits, targets)?;
+    let mut data = Vec::with_capacity(logits.data().len());
+    for row in 0..batch {
+        let base = row * classes;
+        let max = logits.data()[base..base + classes]
+            .iter()
+            .fold(f64::NEG_INFINITY, |best, value| best.max(*value));
+        let denominator: f64 = logits.data()[base..base + classes]
+            .iter()
+            .map(|value| (value - max).exp())
+            .sum();
+        let class = targets.data()[row] as usize;
+        for col in 0..classes {
+            let probability = (logits.data()[base + col] - max).exp() / denominator;
+            let indicator = if col == class { 1.0 } else { 0.0 };
+            data.push(upstream * (probability - indicator) / batch as f64);
+        }
+    }
+    Tensor::from_data(logits.shape().to_vec(), data, Span::default()).map_err(AutodiffError::from)
+}
+
+fn cross_entropy_shapes(
+    logits: &Tensor,
+    targets: &Tensor,
+) -> Result<(usize, usize), AutodiffError> {
+    if logits.shape().len() != 2 {
+        return Err(AutodiffError::new(
+            AutodiffErrorKind::ShapeMismatch,
+            format!(
+                "cross_entropy expects rank-2 logits [batch, classes], got shape {}",
+                format_shape(logits.shape())
+            ),
+        ));
+    }
+    let (batch, classes) = (logits.shape()[0], logits.shape()[1]);
+    if targets.shape() != [batch] {
+        return Err(shape_error(
+            "cross_entropy",
+            logits.shape(),
+            targets.shape(),
+            "targets must have shape [batch]",
+        ));
+    }
+    for (row, target) in targets.data().iter().enumerate() {
+        if !target.is_finite()
+            || *target < 0.0
+            || *target >= classes as f64
+            || target.fract() != 0.0
+        {
+            return Err(AutodiffError::new(
+                AutodiffErrorKind::Runtime,
+                format!(
+                    "cross_entropy target at row {} is not a class index in [0, {})",
+                    row, classes
+                ),
+            ));
+        }
+    }
+    Ok((batch, classes))
+}
+
+fn scalar_value(tensor: &Tensor, operation: &str) -> Result<f64, AutodiffError> {
+    if !tensor.shape().is_empty() || tensor.data().len() != 1 {
+        return Err(AutodiffError::new(
+            AutodiffErrorKind::Runtime,
+            format!("{operation} expects a scalar upstream gradient"),
+        ));
+    }
+    Ok(tensor.data()[0])
+}
+
 fn strides(shape: &[usize]) -> Result<Vec<usize>, AutodiffError> {
     let mut strides = vec![1usize; shape.len()];
     for index in (1..shape.len()).rev() {
@@ -799,7 +1060,7 @@ mod tests {
         let loss = x.mul(&x).expect("square").sum().expect("sum");
         let derivative = grad(&loss, &x).expect("gradient");
 
-        assert_eq!(derivative.shape(), &[]);
+        assert!(derivative.shape().is_empty());
         assert_eq!(derivative.data(), &[6.0]);
     }
 }

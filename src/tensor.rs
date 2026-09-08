@@ -83,6 +83,11 @@ impl Tensor {
         &self.data
     }
 
+    /// Returns the flat row-major values for in-place optimizer updates.
+    pub fn data_mut(&mut self) -> &mut [f64] {
+        &mut self.data
+    }
+
     pub fn sum(&self) -> f64 {
         self.data.iter().sum()
     }

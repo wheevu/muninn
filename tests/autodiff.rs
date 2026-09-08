@@ -265,3 +265,117 @@ count();
     let analysis = analyze_document("let value: Int = 4; value;");
     assert!(analysis.is_ok());
 }
+
+fn sigmoid_scalar(value: f64) -> f64 {
+    1.0 / (1.0 + (-value).exp())
+}
+
+#[test]
+fn sigmoid_value_and_gradient_match_closed_form() {
+    let tape = Tape::new();
+    let input = tape.variable(tensor(&[3], &[-1.0, 0.0, 2.0]));
+    let output = input.sigmoid().expect("sigmoid");
+    let expected = [-1.0, 0.0, 2.0].map(sigmoid_scalar);
+    assert_close(output.value().data(), &expected, 1e-12);
+
+    let loss = output.sum().expect("sum");
+    let gradient = grad(&loss, &input).expect("sigmoid gradient");
+    let expected_grad = expected.map(|p| p * (1.0 - p));
+    assert_close(gradient.data(), &expected_grad, 1e-12);
+}
+
+#[test]
+fn bce_with_logits_value_and_gradient_match_finite_difference() {
+    let tape = Tape::new();
+    let logits = tape.variable(tensor(&[4], &[-1.5, -0.2, 0.7, 2.0]));
+    let targets = tape.constant(tensor(&[4], &[0.0, 1.0, 1.0, 0.0]));
+    let loss = logits.bce_with_logits(&targets).expect("bce");
+    assert!(loss.shape().is_empty());
+
+    let stable = |x: f64, z: f64| x.max(0.0) - x * z + (1.0 + (-x.abs()).exp()).ln();
+    let expected =
+        (stable(-1.5, 0.0) + stable(-0.2, 1.0) + stable(0.7, 1.0) + stable(2.0, 0.0)) / 4.0;
+    assert_close(loss.value().data(), &[expected], 1e-12);
+
+    // d/dx mean(stable_bce) = (sigmoid(x) - z) / n.
+    let gradient = grad(&loss, &logits).expect("bce gradient");
+    let expected_grad = [-1.5, -0.2, 0.7, 2.0]
+        .iter()
+        .zip([0.0, 1.0, 1.0, 0.0])
+        .map(|(x, z)| (sigmoid_scalar(*x) - z) / 4.0)
+        .collect::<Vec<_>>();
+    assert_close(gradient.data(), &expected_grad, 1e-12);
+
+    let mismatched = tape.constant(tensor(&[2], &[0.0, 1.0]));
+    let shape_error = logits
+        .bce_with_logits(&mismatched)
+        .expect_err("shape contract");
+    assert_eq!(shape_error.kind, AutodiffErrorKind::ShapeMismatch);
+}
+
+#[test]
+fn cross_entropy_value_and_gradient_match_finite_difference() {
+    let tape = Tape::new();
+    let logits = tape.variable(tensor(&[2, 3], &[1.0, 2.0, 0.5, -1.0, 0.0, 1.5]));
+    let targets = tape.constant(tensor(&[2], &[1.0, 2.0]));
+    let loss = logits.cross_entropy_logits(&targets).expect("ce");
+    assert!(loss.shape().is_empty());
+
+    let row_loss = |row: &[f64], class: usize| {
+        let max = row.iter().fold(f64::NEG_INFINITY, |best, v| best.max(*v));
+        let denom: f64 = row.iter().map(|v| (v - max).exp()).sum();
+        max + denom.ln() - row[class]
+    };
+    let expected = (row_loss(&[1.0, 2.0, 0.5], 1) + row_loss(&[-1.0, 0.0, 1.5], 2)) / 2.0;
+    assert_close(loss.value().data(), &[expected], 1e-12);
+
+    // d/dx = (softmax(x) - onehot) / batch.
+    let softmax = |row: &[f64]| {
+        let max = row.iter().fold(f64::NEG_INFINITY, |best, v| best.max(*v));
+        let denom: f64 = row.iter().map(|v| (v - max).exp()).sum();
+        row.iter()
+            .map(|v| (v - max).exp() / denom)
+            .collect::<Vec<_>>()
+    };
+    let mut expected_grad = Vec::new();
+    for (row, class) in [vec![1.0, 2.0, 0.5], vec![-1.0, 0.0, 1.5]]
+        .iter()
+        .zip([1, 2])
+    {
+        for (col, prob) in softmax(row).iter().enumerate() {
+            expected_grad.push((prob - f64::from(col == class)) / 2.0);
+        }
+    }
+    let gradient = grad(&loss, &logits).expect("ce gradient");
+    assert_close(gradient.data(), &expected_grad, 1e-12);
+
+    let bad_targets = tape.constant(tensor(&[3], &[0.0, 1.0, 2.0]));
+    let shape_error = logits
+        .cross_entropy_logits(&bad_targets)
+        .expect_err("batch contract");
+    assert_eq!(shape_error.kind, AutodiffErrorKind::ShapeMismatch);
+}
+
+#[test]
+fn new_graph_ops_agree_with_central_finite_difference() {
+    // Sigmoid path: loss = sum(sigmoid(x)).
+    let tape = Tape::new();
+    let x = tape.variable(tensor(&[2], &[0.3, -0.8]));
+    let loss = x.sigmoid().expect("sigmoid").sum().expect("sum");
+    let analytic = grad(&loss, &x).expect("gradient").data().to_vec();
+    let epsilon = 1e-6;
+    for (index, point) in [0.3, -0.8].iter().enumerate() {
+        let mut plus = [0.3, -0.8];
+        let mut minus = [0.3, -0.8];
+        plus[index] += epsilon;
+        minus[index] -= epsilon;
+        let value = |data: [f64; 2]| data.iter().map(|v| sigmoid_scalar(*v)).sum::<f64>();
+        let numeric = (value(plus) - value(minus)) / (2.0 * epsilon);
+        assert!(
+            (analytic[index] - numeric).abs() < 1e-6,
+            "sigmoid grad {} vs {numeric}",
+            analytic[index]
+        );
+        let _ = point;
+    }
+}

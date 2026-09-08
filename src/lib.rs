@@ -7,6 +7,7 @@ pub mod frontend;
 pub mod jit;
 pub mod lexer;
 pub mod native;
+pub mod optim;
 pub mod parser;
 pub mod runtime;
 pub mod source;
