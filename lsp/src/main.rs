@@ -235,6 +235,7 @@ impl LanguageServer for Backend {
                 kind: match symbol.kind {
                     muninn::typecheck::SymbolKind::Function => SymbolKind::FUNCTION,
                     muninn::typecheck::SymbolKind::NativeFunction(_) => SymbolKind::FUNCTION,
+                    muninn::typecheck::SymbolKind::Record => SymbolKind::STRUCT,
                     _ => SymbolKind::VARIABLE,
                 },
                 tags: None,

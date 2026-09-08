@@ -470,6 +470,44 @@ impl Vm {
                 let value = self.get_global_cached(&name, span)?;
                 self.stack.push(value);
             }
+            OpCode::BuildRecord => {
+                let fields = self.read_u16(frame_index, span)? as usize;
+                if self.stack.len() < fields.saturating_mul(2) {
+                    return Err(vm_error("stack underflow", span));
+                }
+                let mut record = std::collections::BTreeMap::new();
+                for _ in 0..fields {
+                    let name = self.pop(span)?;
+                    let value = self.pop(span)?;
+                    let Value::String(name) = name else {
+                        return Err(vm_error("record field name must be a string", span));
+                    };
+                    record.insert(name.to_string(), value);
+                }
+                self.stack.push(Value::Record(record));
+            }
+            OpCode::GetField => {
+                let name = self.read_name(frame_index, span)?;
+                let base = self.pop(span)?;
+                match base {
+                    Value::Record(fields) => match fields.get(&name) {
+                        Some(value) => self.stack.push(value.clone()),
+                        None => {
+                            return Err(vm_error(format!("record has no field '{}'", name), span));
+                        }
+                    },
+                    other => {
+                        return Err(vm_error(
+                            format!(
+                                "value of type {} has no fields (field '{}')",
+                                other.kind_name(),
+                                name
+                            ),
+                            span,
+                        ));
+                    }
+                }
+            }
             OpCode::SetGlobal => {
                 let name = self.read_name(frame_index, span)?;
                 let value = self.pop(span)?;
@@ -882,6 +920,7 @@ fn value_matches_kind(value: &Value, kind: GlobalValueKind) -> bool {
             | (Value::String(_), GlobalValueKind::String)
             | (Value::Tensor(_), GlobalValueKind::Tensor)
             | (Value::Function(_), GlobalValueKind::Function)
+            | (Value::Record(_), GlobalValueKind::Record)
     )
 }
 

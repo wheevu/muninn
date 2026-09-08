@@ -1,0 +1,7 @@
+// Probes tensor data prep: build, reshape, reduce a small batch.
+let batch: Tensor = tensor_fill(4, 8, 2.0);
+let flat: Tensor = tensor_reshape(batch, 32);
+let total: Float = tensor_sum(flat);
+assert(total == 64.0);
+print(total);
+total;

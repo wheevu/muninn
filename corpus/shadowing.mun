@@ -1,0 +1,19 @@
+// Probes shadowing and same-named locals across functions for the
+// LSP reference index: each `value` must resolve to its own binder.
+fn first(value: Int) -> Int {
+    return value + 1;
+}
+
+fn second(value: Int) -> Int {
+    let value: Int = value * 10;
+    return value + 2;
+}
+
+let value: Int = 0;
+let a: Int = first(1);
+let b: Int = second(2);
+assert(a == 2);
+assert(b == 22);
+print(a);
+print(b);
+value;

@@ -1,0 +1,10 @@
+// Probes boundary comparisons and string concatenation.
+let a: Int = 0;
+let b: Int = -5;
+let neg: Int = -a;
+assert(neg == 0);
+assert((b < 0) && (a == 0));
+let greeting: String = "hi" + " " + "there";
+assert(greeting == "hi there");
+print(greeting);
+greeting;

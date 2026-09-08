@@ -1,0 +1,13 @@
+// Probes a hot numeric kernel: the loop the tracing JIT watches.
+fn count() -> Int {
+    let mut total: Int = 0;
+    while (total < 2000) {
+        total = total + 1;
+    }
+    return total;
+}
+
+let result: Int = count();
+assert(result == 2000);
+print(result);
+result;

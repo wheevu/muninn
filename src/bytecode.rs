@@ -66,6 +66,7 @@ pub enum GlobalValueKind {
     String = 3,
     Tensor = 4,
     Function = 5,
+    Record = 6,
 }
 
 impl GlobalValueKind {
@@ -77,6 +78,7 @@ impl GlobalValueKind {
             3 => Ok(Self::String),
             4 => Ok(Self::Tensor),
             5 => Ok(Self::Function),
+            6 => Ok(Self::Record),
             _ => Err(BytecodeDecodeError::new(format!(
                 "unknown global kind tag {}",
                 tag
@@ -227,6 +229,8 @@ pub enum OpCode {
     Loop = 21,
     Call = 22,
     Return = 23,
+    BuildRecord = 24,
+    GetField = 25,
 }
 
 impl OpCode {
@@ -256,6 +260,8 @@ impl OpCode {
             21 => Some(Self::Loop),
             22 => Some(Self::Call),
             23 => Some(Self::Return),
+            24 => Some(Self::BuildRecord),
+            25 => Some(Self::GetField),
             _ => None,
         }
     }
@@ -562,6 +568,28 @@ pub fn validate_module(module: &BytecodeModule) -> Result<(), Vec<MuninnError>> 
                         )),
                     }
                 }
+                OpCode::GetField => {
+                    let index = read_u16(&function.chunk.code, ip + 1) as usize;
+                    match function.chunk.constants.get(index) {
+                        Some(Constant::String(_)) => {}
+                        Some(_) => errors.push(MuninnError::new(
+                            "compiler",
+                            format!(
+                                "field name constant at index {} is not a string in function '{}'",
+                                index, function.name
+                            ),
+                            span,
+                        )),
+                        None => errors.push(MuninnError::new(
+                            "compiler",
+                            format!(
+                                "field name constant index {} out of bounds in function '{}'",
+                                index, function.name
+                            ),
+                            span,
+                        )),
+                    }
+                }
                 OpCode::GetLocal | OpCode::SetLocal => {
                     let slot = read_u16(&function.chunk.code, ip + 1) as usize;
                     if slot >= function.local_count {
@@ -607,7 +635,8 @@ pub fn validate_module(module: &BytecodeModule) -> Result<(), Vec<MuninnError>> 
                 | OpCode::Equal
                 | OpCode::Greater
                 | OpCode::Less
-                | OpCode::Return => {}
+                | OpCode::Return
+                | OpCode::BuildRecord => {}
             }
 
             ip += width;
@@ -717,6 +746,31 @@ fn check_function_stack(
                     push_underflow(errors, function, ip);
                 } else {
                     push_fallthrough(&mut worklist, errors, function, next, op, height - 1);
+                }
+            }
+            OpCode::GetField => {
+                // Pops the record, pushes the field value.
+                if height < 1 {
+                    push_underflow(errors, function, ip);
+                } else {
+                    push_fallthrough(&mut worklist, errors, function, next, op, height);
+                }
+            }
+            OpCode::BuildRecord => {
+                // Pops name/value pairs, pushes one record.
+                let fields = read_u16(code, ip + 1) as usize;
+                let needed = fields.saturating_mul(2);
+                if height < needed {
+                    push_underflow(errors, function, ip);
+                } else {
+                    push_fallthrough(
+                        &mut worklist,
+                        errors,
+                        function,
+                        next,
+                        op,
+                        height - needed + 1,
+                    );
                 }
             }
             OpCode::Add
@@ -847,7 +901,9 @@ fn instruction_width(op: OpCode) -> usize {
         | OpCode::SetGlobal
         | OpCode::JumpIfFalse
         | OpCode::Jump
-        | OpCode::Loop => 3,
+        | OpCode::Loop
+        | OpCode::BuildRecord
+        | OpCode::GetField => 3,
         OpCode::Call => 2,
         OpCode::Nil
         | OpCode::True

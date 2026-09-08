@@ -58,6 +58,7 @@ pub fn compile_to_bytecode(source: &str) -> Result<BytecodeModule, Vec<MuninnErr
             }),
             SymbolKind::Local
             | SymbolKind::Parameter
+            | SymbolKind::Record
             | SymbolKind::NativeFunction(_) => None,
         })
         .collect();
@@ -100,6 +101,7 @@ fn global_kind_from_ty(ty: &Ty) -> Option<ModuleGlobalValueKind> {
         Ty::Bool => Some(ModuleGlobalValueKind::Bool),
         Ty::String => Some(ModuleGlobalValueKind::String),
         Ty::Tensor => Some(ModuleGlobalValueKind::Tensor),
+        Ty::Record(_) => Some(ModuleGlobalValueKind::Record),
         Ty::Void | Ty::Function(_, _) | Ty::NativeFunction(_) | Ty::Error => None,
     }
 }

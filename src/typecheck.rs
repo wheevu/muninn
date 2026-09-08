@@ -19,6 +19,9 @@ pub enum Ty {
     String,
     Tensor,
     Void,
+    /// A nominal record type by declaration name. Equality is by name:
+    /// no subtyping, no structural matching.
+    Record(String),
     Function(Vec<Ty>, Box<Ty>),
     NativeFunction(NativeFunctionKind),
     Error,
@@ -30,6 +33,7 @@ pub enum SymbolKind {
     Local,
     Parameter,
     Function,
+    Record,
     NativeFunction(NativeFunctionKind),
 }
 
@@ -111,8 +115,16 @@ pub fn check_program(program: &Program) -> Result<SemanticModel, Vec<MuninnError
 struct Analyzer {
     model: SemanticModel,
     scopes: Vec<HashMap<String, usize>>,
+    records: HashMap<String, RecordDef>,
     current_return: Option<Ty>,
     inside_function: bool,
+}
+
+/// A resolved record declaration: field names and types in declaration
+/// order. Nominal: the declaration name is the type identity.
+#[derive(Debug, Clone)]
+struct RecordDef {
+    fields: Vec<(String, Ty)>,
 }
 
 impl Analyzer {
@@ -120,6 +132,7 @@ impl Analyzer {
         let mut analyzer = Self {
             model: SemanticModel::default(),
             scopes: vec![HashMap::new()],
+            records: HashMap::new(),
             current_return: None,
             inside_function: false,
         };
@@ -132,6 +145,7 @@ impl Analyzer {
     }
 
     fn analyze(&mut self, program: &Program) {
+        self.collect_records(program);
         self.collect_functions(program);
         let mut reached_terminal = false;
         for statement in &program.statements {
@@ -168,6 +182,81 @@ impl Analyzer {
         }
     }
 
+    /// Registers record declarations in two phases so field types may
+    /// name records declared later in the file. Phase one records every
+    /// name (duplicate declarations are one diagnostic each); phase two
+    /// resolves field types, where an unknown name is a diagnostic on the
+    /// field, not a cascade.
+    fn collect_records(&mut self, program: &Program) {
+        let mut duplicates = std::collections::HashSet::new();
+        for statement in &program.statements {
+            let StmtKind::Record(declaration) = &statement.kind else {
+                continue;
+            };
+            if self.records.contains_key(&declaration.name) {
+                // One diagnostic per duplicate; the first definition wins.
+                if duplicates.insert(declaration.name.clone()) {
+                    self.error(
+                        declaration.name_span,
+                        format!("record '{}' is already defined", declaration.name),
+                    );
+                }
+                continue;
+            }
+            self.records
+                .insert(declaration.name.clone(), RecordDef { fields: Vec::new() });
+            let symbol = Symbol {
+                id: self.model.symbols.len(),
+                name: declaration.name.clone(),
+                kind: SymbolKind::Record,
+                span: declaration.name_span,
+                detail: format!("record {}", declaration.name),
+                ty: Ty::Record(declaration.name.clone()),
+                mutable: false,
+            };
+            self.define_global(symbol);
+        }
+
+        for statement in &program.statements {
+            let StmtKind::Record(declaration) = &statement.kind else {
+                continue;
+            };
+            if duplicates.contains(&declaration.name) {
+                continue;
+            }
+            let mut seen = std::collections::HashSet::new();
+            let mut fields = Vec::new();
+            for field in &declaration.fields {
+                if !seen.insert(field.name.clone()) {
+                    self.error(
+                        field.name_span,
+                        format!(
+                            "record '{}' has a duplicate field '{}'",
+                            declaration.name, field.name
+                        ),
+                    );
+                    continue;
+                }
+                let field_ty = ty_from_type_expr(&field.ty);
+                self.check_named_type(&field_ty, field.name_span);
+                fields.push((field.name.clone(), field_ty));
+            }
+            if let Some(definition) = self.records.get_mut(&declaration.name) {
+                definition.fields = fields;
+            }
+        }
+    }
+
+    /// Reports an unknown record type name. Closed types always resolve;
+    /// only `Ty::Record` needs the table.
+    fn check_named_type(&mut self, ty: &Ty, span: Span) {
+        if let Ty::Record(name) = ty
+            && !self.records.contains_key(name)
+        {
+            self.error(span, format!("unknown record type '{}'", name));
+        }
+    }
+
     fn collect_functions(&mut self, program: &Program) {
         for statement in &program.statements {
             if let StmtKind::Function(function) = &statement.kind {
@@ -181,9 +270,9 @@ impl Analyzer {
                         function
                             .params
                             .iter()
-                            .map(|param| ty_from_type_expr(param.ty))
+                            .map(|param| ty_from_type_expr(&param.ty))
                             .collect(),
-                        Box::new(ty_from_type_expr(function.return_type)),
+                        Box::new(ty_from_type_expr(&function.return_type)),
                     ),
                     mutable: false,
                 };
@@ -202,9 +291,10 @@ impl Analyzer {
                 initializer,
             } => {
                 let initializer_ty = self.check_expr(initializer);
-                let declared_ty = ty.map(ty_from_type_expr);
+                let declared_ty = ty.as_ref().map(ty_from_type_expr);
                 let final_ty = match declared_ty {
                     Some(expected) => {
+                        self.check_named_type(&expected, *name_span);
                         if !self.ty_compatible(&expected, &initializer_ty) {
                             self.error(
                                 initializer.span,
@@ -233,6 +323,17 @@ impl Analyzer {
                     return;
                 }
                 self.check_function(function);
+            }
+            StmtKind::Record(_) => {
+                // The parser only accepts record declarations at the top
+                // level; this is defense in depth for hand-built ASTs.
+                // Field types resolve once in `collect_records`.
+                if !top_level {
+                    self.error(
+                        stmt.span,
+                        "record declarations must be top-level".to_string(),
+                    );
+                }
             }
             StmtKind::Return(value) => {
                 if !self.inside_function {
@@ -331,11 +432,14 @@ impl Analyzer {
     fn check_function(&mut self, function: &FunctionDecl) {
         let previous_return = self.current_return.clone();
         let previous_inside_function = self.inside_function;
-        self.current_return = Some(ty_from_type_expr(function.return_type));
+        let return_ty = ty_from_type_expr(&function.return_type);
+        self.check_named_type(&return_ty, function.name_span);
+        self.current_return = Some(return_ty);
         self.inside_function = true;
         self.enter_scope();
         for param in &function.params {
-            let ty = ty_from_type_expr(param.ty);
+            let ty = ty_from_type_expr(&param.ty);
+            self.check_named_type(&ty, param.span);
             self.define_symbol(
                 param.name.clone(),
                 SymbolKind::Parameter,
@@ -445,6 +549,111 @@ impl Analyzer {
                     .collect::<Vec<_>>();
                 self.check_call(callee, &callee_ty, &arg_types, expr.span)
             }
+            ExprKind::RecordLit {
+                name,
+                name_span,
+                fields,
+            } => {
+                let Some(definition) = self.records.get(name).cloned() else {
+                    self.error(expr.span, format!("unknown record type '{}'", name));
+                    for field in fields {
+                        self.check_expr(&field.value);
+                    }
+                    self.model.expr_types.insert(expr.id, Ty::Error);
+                    return Ty::Error;
+                };
+                // Go-to-definition for the constructor's type name.
+                if let Some(symbol_id) = self.lookup_symbol(name) {
+                    self.model.references.push(Reference {
+                        span: *name_span,
+                        target: symbol_id,
+                    });
+                }
+                let mut seen = std::collections::HashSet::new();
+                for field in fields {
+                    let value_ty = self.check_expr(&field.value);
+                    if !seen.insert(field.name.clone()) {
+                        self.error(
+                            field.name_span,
+                            format!(
+                                "duplicate field '{}' in '{}' construction",
+                                field.name, name
+                            ),
+                        );
+                        continue;
+                    }
+                    match definition.fields.iter().find(|(n, _)| n == &field.name) {
+                        Some((_, expected)) => {
+                            if !self.ty_compatible(expected, &value_ty) {
+                                self.error(
+                                    field.name_span,
+                                    format!(
+                                        "field '{}' of '{}' expects {}, got {}",
+                                        field.name,
+                                        name,
+                                        display_ty(expected),
+                                        display_ty(&value_ty)
+                                    ),
+                                );
+                            }
+                        }
+                        None => {
+                            self.error(
+                                field.name_span,
+                                format!("record '{}' has no field '{}'", name, field.name),
+                            );
+                        }
+                    }
+                }
+                for (field_name, _) in &definition.fields {
+                    if !seen.contains(field_name) {
+                        self.error(
+                            expr.span,
+                            format!("'{}' construction is missing field '{}'", name, field_name),
+                        );
+                    }
+                }
+                Ty::Record(name.clone())
+            }
+            ExprKind::Field {
+                base,
+                field,
+                field_span,
+            } => {
+                let base_ty = self.check_expr(base);
+                match &base_ty {
+                    Ty::Record(name) => match self.records.get(name).cloned() {
+                        Some(definition) => {
+                            match definition.fields.iter().find(|(n, _)| n == field) {
+                                Some((_, field_ty)) => field_ty.clone(),
+                                None => {
+                                    self.error(
+                                        *field_span,
+                                        format!("record '{}' has no field '{}'", name, field),
+                                    );
+                                    Ty::Error
+                                }
+                            }
+                        }
+                        None => {
+                            self.error(expr.span, format!("unknown record type '{}'", name));
+                            Ty::Error
+                        }
+                    },
+                    Ty::Error => Ty::Error,
+                    other => {
+                        self.error(
+                            expr.span,
+                            format!(
+                                "value of type {} has no fields (field '{}')",
+                                display_ty(other),
+                                field
+                            ),
+                        );
+                        Ty::Error
+                    }
+                }
+            }
             ExprKind::If {
                 condition,
                 then_branch,
@@ -525,6 +734,14 @@ impl Analyzer {
             }
             BinaryOp::Equal | BinaryOp::NotEqual => {
                 if self.scalar_equality_compatible(left, right) {
+                    Ty::Bool
+                } else if matches!(
+                    (left, right),
+                    (Ty::Record(left_name), Ty::Record(right_name))
+                    if left_name == right_name
+                ) {
+                    // Same nominal record on both sides compares
+                    // structurally at runtime.
                     Ty::Bool
                 } else if matches!(left, Ty::Error) || matches!(right, Ty::Error) {
                     Ty::Error
@@ -840,7 +1057,7 @@ fn format_function_signature(function: &FunctionDecl) -> String {
             format!(
                 "{}: {}",
                 param.name,
-                display_ty(&ty_from_type_expr(param.ty))
+                display_ty(&ty_from_type_expr(&param.ty))
             )
         })
         .collect::<Vec<_>>()
@@ -849,7 +1066,7 @@ fn format_function_signature(function: &FunctionDecl) -> String {
         "fn {}({}) -> {}",
         function.name,
         params,
-        display_ty(&ty_from_type_expr(function.return_type))
+        display_ty(&ty_from_type_expr(&function.return_type))
     )
 }
 
@@ -861,6 +1078,7 @@ pub fn display_ty(ty: &Ty) -> String {
         Ty::String => "String".to_string(),
         Ty::Tensor => "Tensor".to_string(),
         Ty::Void => "Void".to_string(),
+        Ty::Record(name) => name.clone(),
         Ty::Function(params, ret) => format!(
             "fn({}) -> {}",
             params.iter().map(display_ty).collect::<Vec<_>>().join(", "),
@@ -876,7 +1094,7 @@ pub fn display_ty(ty: &Ty) -> String {
     }
 }
 
-pub fn ty_from_type_expr(ty: TypeExpr) -> Ty {
+pub fn ty_from_type_expr(ty: &TypeExpr) -> Ty {
     match ty {
         TypeExpr::Int => Ty::Int,
         TypeExpr::Float => Ty::Float,
@@ -884,6 +1102,9 @@ pub fn ty_from_type_expr(ty: TypeExpr) -> Ty {
         TypeExpr::String => Ty::String,
         TypeExpr::Tensor => Ty::Tensor,
         TypeExpr::Void => Ty::Void,
+        // Nominal: the name alone is the type. Whether the name is
+        // declared is validated by `check_named_type` at each use.
+        TypeExpr::Record(name) => Ty::Record(name.clone()),
     }
 }
 
@@ -895,6 +1116,10 @@ fn ty_from_native_type(ty: NativeType) -> Ty {
         NativeType::String => Ty::String,
         NativeType::Tensor => Ty::Tensor,
         NativeType::Void => Ty::Void,
+        // No native returns a record; `Record` exists only in parameter
+        // position. Mapping to `Error` poisons any misuse into a type
+        // error instead of an unsound type.
+        NativeType::Record => Ty::Error,
     }
 }
 
@@ -905,6 +1130,7 @@ fn native_type_from_ty(ty: &Ty) -> NativeType {
         Ty::Bool => NativeType::Bool,
         Ty::String => NativeType::String,
         Ty::Tensor => NativeType::Tensor,
+        Ty::Record(_) => NativeType::Record,
         Ty::Void | Ty::Function(_, _) | Ty::NativeFunction(_) | Ty::Error => NativeType::Void,
     }
 }
@@ -925,6 +1151,7 @@ fn native_type_matches_ty(expected: NativeType, actual: &Ty) -> bool {
         NativeType::Bool => actual == &Ty::Bool,
         NativeType::String => actual == &Ty::String,
         NativeType::Tensor => actual == &Ty::Tensor,
+        NativeType::Record => matches!(actual, Ty::Record(_)),
         NativeType::Void => actual == &Ty::Void,
     }
 }
@@ -947,6 +1174,7 @@ fn native_type_name(ty: NativeType) -> &'static str {
         NativeType::String => "String",
         NativeType::Void => "Void",
         NativeType::Tensor => "Tensor",
+        NativeType::Record => "Record",
     }
 }
 

@@ -68,6 +68,7 @@ impl<'a> Lexer<'a> {
             ',' => TokenKind::Comma,
             ';' => TokenKind::Semicolon,
             ':' => TokenKind::Colon,
+            '.' => TokenKind::Dot,
             '+' => TokenKind::Plus,
             '-' => {
                 if self.match_char('>') {
@@ -221,6 +222,7 @@ impl<'a> Lexer<'a> {
             "else" => TokenKind::Else,
             "return" => TokenKind::Return,
             "while" => TokenKind::While,
+            "record" => TokenKind::Record,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             "Int" => TokenKind::TypeInt,

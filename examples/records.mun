@@ -1,0 +1,17 @@
+record Point { x: Int, y: Int }
+
+fn origin() -> Point {
+    return Point { x: 0, y: 0 };
+}
+
+fn translate(point: Point, dx: Int, dy: Int) -> Point {
+    return Point { x: point.x + dx, y: point.y + dy };
+}
+
+let start: Point = origin();
+let moved: Point = translate(start, 3, 4);
+assert(moved.x == 3);
+assert(moved.y == 4);
+assert(moved == Point { x: 3, y: 4 });
+print(moved);
+moved.x + moved.y;

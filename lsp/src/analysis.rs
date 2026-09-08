@@ -6,6 +6,7 @@ pub fn markdown_for_symbol(symbol: &Symbol) -> String {
         SymbolKind::Local => "local",
         SymbolKind::Parameter => "parameter",
         SymbolKind::Function => "function",
+        SymbolKind::Record => "record",
         SymbolKind::NativeFunction(_) => "native function",
     };
 

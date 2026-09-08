@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinaryOp, Block, Expr, ExprKind, FunctionDecl, NodeId, Param, Program, Stmt, StmtKind,
-    TypeExpr, UnaryOp,
+    BinaryOp, Block, Expr, ExprKind, FunctionDecl, NodeId, Param, Program, RecordDecl, RecordField,
+    RecordLitField, Stmt, StmtKind, TypeExpr, UnaryOp,
 };
 use crate::error::MuninnError;
 use crate::token::{Token, TokenKind};
@@ -45,6 +45,9 @@ impl Parser {
         if self.match_simple(&TokenKind::Fn) {
             return self.parse_function_statement();
         }
+        if self.match_simple(&TokenKind::Record) {
+            return self.parse_record_declaration();
+        }
         self.parse_statement(false)
     }
 
@@ -65,6 +68,13 @@ impl Parser {
             return Err(MuninnError::new(
                 "parser",
                 "nested functions are not supported",
+                self.previous().span,
+            ));
+        }
+        if self.match_simple(&TokenKind::Record) {
+            return Err(MuninnError::new(
+                "parser",
+                "record declarations must be top-level",
                 self.previous().span,
             ));
         }
@@ -121,6 +131,47 @@ impl Parser {
         Ok(Stmt {
             id: self.alloc_id(),
             kind: StmtKind::Function(function),
+            span,
+        })
+    }
+
+    fn parse_record_declaration(&mut self) -> Result<Stmt, MuninnError> {
+        let start = self.previous().span;
+        let (name, name_span) = self.consume_identifier_with_span("expected record name")?;
+        self.consume_simple(&TokenKind::LeftBrace, "expected '{' after record name")?;
+        let mut fields = Vec::new();
+        if !self.check_simple(&TokenKind::RightBrace) {
+            loop {
+                let field_start = self.peek().span;
+                let (field_name, field_name_span) =
+                    self.consume_identifier_with_span("expected field name")?;
+                self.consume_simple(&TokenKind::Colon, "expected ':' after field name")?;
+                let ty = self.parse_type_expr()?;
+                fields.push(RecordField {
+                    id: self.alloc_id(),
+                    name: field_name,
+                    name_span: field_name_span,
+                    ty,
+                    span: field_start.merge(self.previous().span),
+                });
+                if !self.match_simple(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        let end_span = self
+            .consume_simple(&TokenKind::RightBrace, "expected '}' after record fields")?
+            .span;
+        let span = start.merge(end_span);
+        Ok(Stmt {
+            id: self.alloc_id(),
+            kind: StmtKind::Record(RecordDecl {
+                id: self.alloc_id(),
+                name,
+                name_span,
+                fields,
+                span,
+            }),
             span,
         })
     }
@@ -492,6 +543,21 @@ impl Parser {
                 };
                 continue;
             }
+            if self.match_simple(&TokenKind::Dot) {
+                let (field, field_span) =
+                    self.consume_identifier_with_span("expected field name after '.'")?;
+                let span = expr.span.merge(field_span);
+                expr = Expr {
+                    id: self.alloc_id(),
+                    kind: ExprKind::Field {
+                        base: Box::new(expr),
+                        field,
+                        field_span,
+                    },
+                    span,
+                };
+                continue;
+            }
             break;
         }
         Ok(expr)
@@ -505,7 +571,15 @@ impl Parser {
             TokenKind::True => ExprKind::Bool(true),
             TokenKind::False => ExprKind::Bool(false),
             TokenKind::StringLiteral(value) => ExprKind::String(value),
-            TokenKind::Identifier(name) => ExprKind::Variable(name),
+            TokenKind::Identifier(name) => {
+                // `Name {` in value position is a record construction. A bare
+                // `{` is a block, and no other construct puts `{` after an
+                // identifier, so this branch is unambiguous.
+                if self.check_simple(&TokenKind::LeftBrace) {
+                    return self.parse_record_literal(name, token.span);
+                }
+                ExprKind::Variable(name)
+            }
             TokenKind::If => return self.parse_if_expression(token.span),
             TokenKind::LeftBrace => {
                 let block = self.parse_block_after_left_brace(token.span, true)?;
@@ -543,6 +617,43 @@ impl Parser {
         })
     }
 
+    fn parse_record_literal(
+        &mut self,
+        name: String,
+        name_span: crate::span::Span,
+    ) -> Result<Expr, MuninnError> {
+        self.consume_simple(&TokenKind::LeftBrace, "expected '{' after record name")?;
+        let mut fields = Vec::new();
+        if !self.check_simple(&TokenKind::RightBrace) {
+            loop {
+                let (field_name, field_name_span) =
+                    self.consume_identifier_with_span("expected field name")?;
+                self.consume_simple(&TokenKind::Colon, "expected ':' after field name")?;
+                let value = self.parse_expression()?;
+                fields.push(RecordLitField {
+                    name: field_name,
+                    name_span: field_name_span,
+                    value,
+                });
+                if !self.match_simple(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        let end_span = self
+            .consume_simple(&TokenKind::RightBrace, "expected '}' after record fields")?
+            .span;
+        Ok(Expr {
+            id: self.alloc_id(),
+            kind: ExprKind::RecordLit {
+                name,
+                name_span,
+                fields,
+            },
+            span: name_span.merge(end_span),
+        })
+    }
+
     fn parse_type_expr(&mut self) -> Result<TypeExpr, MuninnError> {
         let token = self.advance().clone();
         match token.kind {
@@ -552,6 +663,9 @@ impl Parser {
             TokenKind::TypeString => Ok(TypeExpr::String),
             TokenKind::TypeTensor => Ok(TypeExpr::Tensor),
             TokenKind::TypeVoid => Ok(TypeExpr::Void),
+            // Record types name a declaration and resolve in semantic
+            // analysis, where an unknown name gets a proper diagnostic.
+            TokenKind::Identifier(name) => Ok(TypeExpr::Record(name)),
             _ => Err(MuninnError::new("parser", "expected type name", token.span)),
         }
     }
@@ -567,7 +681,12 @@ impl Parser {
     fn starts_statement_in_block(&self) -> bool {
         matches!(
             self.peek().kind,
-            TokenKind::Let | TokenKind::Return | TokenKind::While | TokenKind::If | TokenKind::Fn
+            TokenKind::Let
+                | TokenKind::Return
+                | TokenKind::While
+                | TokenKind::If
+                | TokenKind::Fn
+                | TokenKind::Record
         ) || self.is_assignment_statement()
     }
 
@@ -629,6 +748,7 @@ impl Parser {
             }
             match self.peek().kind {
                 TokenKind::Fn
+                | TokenKind::Record
                 | TokenKind::Let
                 | TokenKind::Return
                 | TokenKind::If
@@ -720,7 +840,7 @@ impl Parser {
 
 #[cfg(test)]
 mod tests {
-    use crate::ast::{ExprKind, StmtKind};
+    use crate::ast::{ExprKind, StmtKind, TypeExpr};
     use crate::lexer::Lexer;
 
     use super::Parser;
@@ -787,5 +907,44 @@ while (total < 3) {
         let mut parser = Parser::new(tokens);
         let errors = parser.parse_program().expect_err("errors");
         assert!(errors.len() >= 2);
+    }
+
+    #[test]
+    fn parses_record_declaration_literal_and_field() {
+        let src = "record Point { x: Int, y: Int }\nlet p: Point = Point { x: 1, y: 2 };\np.x;";
+        let tokens = Lexer::new(src).lex().expect("tokens");
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().expect("program");
+        assert_eq!(program.statements.len(), 3);
+        let StmtKind::Record(declaration) = &program.statements[0].kind else {
+            panic!("expected record declaration");
+        };
+        assert_eq!(declaration.name, "Point");
+        assert_eq!(declaration.fields.len(), 2);
+        let StmtKind::Let {
+            ty, initializer, ..
+        } = &program.statements[1].kind
+        else {
+            panic!("expected let");
+        };
+        assert!(matches!(ty, Some(TypeExpr::Record(name)) if name == "Point"));
+        assert!(matches!(initializer.kind, ExprKind::RecordLit { .. }));
+        let StmtKind::Expr(field) = &program.statements[2].kind else {
+            panic!("expected expr");
+        };
+        assert!(matches!(field.kind, ExprKind::Field { .. }));
+    }
+
+    #[test]
+    fn rejects_nested_record_declarations() {
+        let src = "fn f() -> Int { record P { x: Int } return 1; }";
+        let tokens = Lexer::new(src).lex().expect("tokens");
+        let mut parser = Parser::new(tokens);
+        let errors = parser.parse_program().expect_err("errors");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("must be top-level"))
+        );
     }
 }

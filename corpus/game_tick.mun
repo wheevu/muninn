@@ -1,0 +1,20 @@
+// Probes game-tick state: mutable scalars advanced in a loop.
+// Question: entity state (hp, x, y) as separate globals works for one
+// entity; what is the smallest shape that holds ten?
+fn tick(hp: Int, x: Int) -> Int {
+    return x + 1;
+}
+
+let mut hp: Int = 100;
+let mut x: Int = 0;
+let mut steps: Int = 0;
+while (steps < 60) {
+    x = tick(hp, x);
+    hp = hp - 1;
+    steps = steps + 1;
+}
+assert(x == 60);
+assert(hp == 40);
+print(hp);
+print(x);
+x;

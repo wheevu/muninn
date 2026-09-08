@@ -9,6 +9,7 @@ use crate::span::Span;
 
 const MAX_CALL_ARGS: usize = u8::MAX as usize;
 const MAX_LOCAL_SLOT: usize = u16::MAX as usize;
+const MAX_RECORD_FIELDS: usize = u16::MAX as usize;
 
 pub fn compile_program(program: &Program) -> Result<BytecodeModule, Vec<MuninnError>> {
     let mut compiler = ModuleCompiler::new();
@@ -75,7 +76,9 @@ impl ModuleCompiler {
         let runtime_statements = program
             .statements
             .iter()
-            .filter(|statement| !matches!(statement.kind, StmtKind::Function(_)))
+            .filter(|statement| {
+                !matches!(statement.kind, StmtKind::Function(_) | StmtKind::Record(_))
+            })
             .collect::<Vec<_>>();
         for (index, statement) in runtime_statements.iter().enumerate() {
             let is_last = index + 1 == runtime_statements.len();
@@ -150,6 +153,9 @@ impl ModuleCompiler {
                 }
             }
             StmtKind::Function(_) => {}
+            // Record declarations carry no runtime code: construction
+            // happens at each `RecordLit` site.
+            StmtKind::Record(_) => {}
             StmtKind::Return(value) => {
                 if let Some(value) = value {
                     self.compile_expr(compiler, value);
@@ -334,6 +340,37 @@ impl ModuleCompiler {
                 compiler.emit_op(OpCode::Pop, expr.span);
                 self.compile_block(compiler, else_branch, true);
                 compiler.patch_jump(end_jump, expr.span, &mut self.errors);
+            }
+            ExprKind::RecordLit { fields, .. } => {
+                if fields.len() > MAX_RECORD_FIELDS {
+                    self.errors.push(MuninnError::new(
+                        "compiler",
+                        format!(
+                            "record construction has too many fields: maximum is {}",
+                            MAX_RECORD_FIELDS
+                        ),
+                        expr.span,
+                    ));
+                    return;
+                }
+                // Stack order per field is value then name, so the VM pops
+                // name/value pairs from the top.
+                for field in fields {
+                    self.compile_expr(compiler, &field.value);
+                    if let Err(error) =
+                        compiler.emit_constant(Constant::String(field.name.clone()), expr.span)
+                    {
+                        self.errors.push(error);
+                    }
+                }
+                compiler.emit_op(OpCode::BuildRecord, expr.span);
+                compiler.emit_u16(fields.len() as u16, expr.span);
+            }
+            ExprKind::Field { base, field, .. } => {
+                self.compile_expr(compiler, base);
+                if let Err(error) = compiler.emit_named_op(OpCode::GetField, field, expr.span) {
+                    self.errors.push(error);
+                }
             }
         }
     }

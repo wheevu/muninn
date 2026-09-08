@@ -29,6 +29,7 @@ pub enum NativeType {
     String,
     Void,
     Tensor,
+    Record,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -144,6 +145,10 @@ const PRINT_SIGNATURES: &[NativeSignature] = &[
         params: &[NativeType::Tensor],
         return_type: NativeType::Void,
     },
+    NativeSignature {
+        params: &[NativeType::Record],
+        return_type: NativeType::Void,
+    },
 ];
 
 const ASSERT_SIGNATURES: &[NativeSignature] = &[NativeSignature {
@@ -198,7 +203,7 @@ static NATIVE_SPECS: &[NativeSpec] = &[
     NativeSpec {
         kind: NativeFunctionKind::Print,
         name: "print",
-        detail: "fn print(value: Int | Float | Bool | String | Tensor) -> Void",
+        detail: "fn print(value: Int | Float | Bool | String | Tensor | Record) -> Void",
         signatures: PRINT_SIGNATURES,
         runtime: native_print,
     },
@@ -613,6 +618,7 @@ pub fn native_type_name(ty: &NativeType) -> &'static str {
         NativeType::String => "String",
         NativeType::Void => "Void",
         NativeType::Tensor => "Tensor",
+        NativeType::Record => "Record",
     }
 }
 
@@ -623,6 +629,7 @@ pub fn native_value_type(value: &Value) -> &'static str {
         Value::Bool(_) => "Bool",
         Value::String(_) => "String",
         Value::Tensor(_) => "Tensor",
+        Value::Record(_) => "Record",
         Value::Function(_) => "Function",
         Value::Native(_) => "NativeFunction",
         Value::Nil => "Void",

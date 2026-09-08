@@ -1,0 +1,11 @@
+// Probes typed config evaluation: constants, derived values, asserts.
+// Question for the shape experiment: would a record type make grouped
+// config (window width/height/title) cleaner than flat globals?
+let width: Int = 1280;
+let height: Int = 720;
+let title: String = "muninn";
+let pixels: Int = width * height;
+assert(pixels == 921600);
+print(title);
+print(pixels);
+pixels;

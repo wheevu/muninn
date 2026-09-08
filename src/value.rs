@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
@@ -11,6 +12,9 @@ pub enum Value {
     Bool(bool),
     String(Arc<str>),
     Tensor(Arc<Tensor>),
+    /// A nominal record value: field names to values in sorted order.
+    /// Construction order is irrelevant; equality is structural.
+    Record(BTreeMap<String, Value>),
     Function(usize),
     Native(NativeFunctionKind),
     Nil,
@@ -24,6 +28,7 @@ impl Value {
             Value::Bool(_) => "Bool",
             Value::String(_) => "String",
             Value::Tensor(_) => "Tensor",
+            Value::Record(_) => "Record",
             Value::Function(_) => "Function",
             Value::Native(_) => "NativeFunction",
             Value::Nil => "Void",
@@ -43,6 +48,14 @@ impl Value {
             Value::Bool(value) => value.to_string(),
             Value::String(value) => value.to_string(),
             Value::Tensor(value) => value.format(),
+            Value::Record(fields) => {
+                let body = fields
+                    .iter()
+                    .map(|(name, value)| format!("{}: {}", name, value.stringify()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{{{}}}", body)
+            }
             Value::Function(_) => "<fn>".to_string(),
             Value::Native(_) => "<native fn>".to_string(),
             Value::Nil => "nil".to_string(),
@@ -55,6 +68,12 @@ impl Value {
             (Value::Float(left), Value::Float(right)) => left == right,
             (Value::Bool(left), Value::Bool(right)) => left == right,
             (Value::String(left), Value::String(right)) => left == right,
+            (Value::Record(left), Value::Record(right)) => {
+                left.len() == right.len()
+                    && left.iter().all(|(name, value)| {
+                        right.get(name).is_some_and(|other| value.equals(other))
+                    })
+            }
             (Value::Nil, Value::Nil) => true,
             _ => false,
         }

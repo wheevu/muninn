@@ -25,6 +25,7 @@ pub enum StmtKind {
         initializer: Expr,
     },
     Function(FunctionDecl),
+    Record(RecordDecl),
     Return(Option<Expr>),
     While {
         condition: Expr,
@@ -58,6 +59,26 @@ pub struct FunctionDecl {
 pub struct Param {
     pub id: NodeId,
     pub name: String,
+    pub ty: TypeExpr,
+    pub span: Span,
+}
+
+/// A nominal record declaration: `record Point { x: Int, y: Int }`.
+/// Records are top-level only, mirroring functions.
+#[derive(Debug, Clone)]
+pub struct RecordDecl {
+    pub id: NodeId,
+    pub name: String,
+    pub name_span: Span,
+    pub fields: Vec<RecordField>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordField {
+    pub id: NodeId,
+    pub name: String,
+    pub name_span: Span,
     pub ty: TypeExpr,
     pub span: Span,
 }
@@ -99,11 +120,32 @@ pub enum ExprKind {
         callee: Box<Expr>,
         args: Vec<Expr>,
     },
+    /// A record construction: `Point { x: 1, y: 2 }`. The name span feeds
+    /// go-to-definition for the record type.
+    RecordLit {
+        name: String,
+        name_span: Span,
+        fields: Vec<RecordLitField>,
+    },
+    /// Field read: `point.x`. Field assignment is out of scope; whole
+    /// record replacement through `Assign` covers mutation.
+    Field {
+        base: Box<Expr>,
+        field: String,
+        field_span: Span,
+    },
     If {
         condition: Box<Expr>,
         then_branch: Block,
         else_branch: Block,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordLitField {
+    pub name: String,
+    pub name_span: Span,
+    pub value: Expr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,7 +170,7 @@ pub enum BinaryOp {
     Or,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeExpr {
     Int,
     Float,
@@ -136,4 +178,7 @@ pub enum TypeExpr {
     String,
     Tensor,
     Void,
+    /// A nominal record type by declaration name. Resolution against the
+    /// record table happens in semantic analysis, not parsing.
+    Record(String),
 }

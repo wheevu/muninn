@@ -1,0 +1,10 @@
+// Probes nested data without maps: a 2-row tensor stands in for a
+// list of {name, score} pairs, with ids kept in a parallel tensor.
+// This is the motivating gap for the records-vs-arrays bake-off: the
+// program works, but row 0 vs row 1 is convention, not a checked shape.
+let ids: Tensor = tensor_fill(3, 1.0);
+let scores: Tensor = tensor_fill(3, 10.0);
+let total: Float = tensor_sum(scores);
+assert(total == 30.0);
+print(total);
+total;
