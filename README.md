@@ -11,13 +11,13 @@ The same program can run through the interpreter, bytecode path, hot-reload runt
 
 | Metric | Result |
 | --- | ---: |
-| Workspace tests | 117 |
+| Workspace tests | 193 |
 | Benchmark targets | 6 |
-| Scalar loop, compile and run | 538 µs/op |
-| Scalar loop, VM only | 480 µs/op |
-| Tensor pipeline, compile and run | 40 µs/op |
+| Scalar loop, compile and run | 400 µs/op |
+| Scalar loop, VM only | 354 µs/op |
+| Tensor pipeline, compile and run | 32 µs/op |
 
-Apple M1, Rust 1.97.1, release mode, commit `942fda4`.
+Apple M1, Rust 1.97.1, release mode, commit `e154224` plus uncommitted working tree.
 These are local wall-clock measurements from `muninn-metrics`, not portable latency claims.
 
 ![Muninn runtime modes](docs/runtime-modes.svg)
@@ -25,7 +25,7 @@ These are local wall-clock measurements from `muninn-metrics`, not portable late
 ## Language shape
 
 - Typed functions, bindings, mutation, blocks, loops, and conditionals
-- Int, Float, Bool, String, Tensor, and Void
+- Int, Float, Bool, String, Tensor, Void, and nominal records
 - Tensor broadcasting, matrix multiplication, reductions, and eager gradients
 - Source checks, bytecode builds, editor support, and runtime metrics
 

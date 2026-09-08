@@ -14,7 +14,7 @@ source -> lexer -> parser -> typecheck -> bytecode -> VM
 - `src/compiler.rs` lowers checked programs into bytecode.
 - `src/bytecode.rs` encodes, decodes, and validates `.mubc` modules.
 - `src/vm.rs` executes bytecode, maintains VM-local global lookup cache stats, handles safe-point reloads, and reports span-carrying runtime errors.
-- `src/frontend.rs` shares parser/typechecker results with CLI and LSP tooling.
+- `src/frontend.rs` shares parser/typechecker results with CLI and LSP tooling. `references_to_target` exposes the exact reference index (definition plus reference spans per symbol id) behind LSP references, rename, and highlight, so same-named locals stay distinct without text matching.
 - `lsp/` is deliberately thin: diagnostics, hover, and definition use the same semantic model as the CLI.
 - `src/autodiff.rs` is an additive eager tensor-expression tape. Reverse-mode `grad` traverses it directly and is intentionally not part of bytecode, VM, JIT, hot-reload, or LSP execution.
 
@@ -23,6 +23,8 @@ source -> lexer -> parser -> typecheck -> bytecode -> VM
 The VM treats bytecode as an input boundary. Decoded modules are validated before execution: opcodes, operand widths, local slots, jump targets, function references, and entry function bounds are checked before the VM runs.
 
 Accepted modules additionally guarantee three runtime properties: no operand-stack underflow on any reachable path, no fall off the end of a function, and agreement on stack height wherever control-flow paths join. Jump and loop targets must be instruction starts, not merely in-bounds offsets. Operand types are deliberately unchecked: the value stack is dynamically typed, so type errors stay runtime guards with source spans.
+
+Hosts embed untrusted scripts through `HostPolicy`: a builtin allowlist that traps by name, deterministic per-instruction fuel, a best-effort wall-clock timeout checked every 1024 instructions, a host tensor element cap enforced before allocation, and optional readonly globals. One `Vm` per guest is the isolation boundary; budgets reset on fresh starts and successful reloads. The default policy preserves legacy behavior (everything allowed, no limits).
 
 Tensor allocation is capped so source programs cannot request arbitrarily large runtime buffers through tensor builtins. The empty shape `[]` is a scalar; all non-scalar dimensions must be positive, and zero-element tensors are rejected consistently. Compiler operands that must fit bytecode fields are checked before emission.
 
@@ -37,6 +39,10 @@ Compatibility promises are narrow: same-`MUBC_VERSION` artifacts only, strict tr
 The JIT is experimental and feature-gated with `--features jit`. It only targets small hot loops over local `Int` values. Unsupported traces fall back to the interpreter.
 
 The native path is deliberately narrow: traces are interpreted by the trace engine when no native trace is available, and the Cranelift backend only handles a small integer subset with overflow bailouts back to the interpreter. It is not a general optimizer.
+
+The VM talks to traces only through the `JitBackend` trait in `src/jit.rs` (observe, run-if-ready, stats, clear). Cranelift imports live solely in the feature-gated native-trace region of that file, so upstream API breakage cannot leak into `vm.rs` or the core.
+
+Pinned to Cranelift 0.135 as of this revision (up from 0.115): the jump needed exactly two mechanical renames inside `src/jit.rs` (`MemFlags` to `MemFlagsData`, `finalize()` to `finalize(isa.frontend_config())`) plus two sign-extending immediate helpers (`iadd_imm_s`, `icmp_imm_s`, behavior-identical for the small non-negative immediates used). Full workspace suite passes with and without the feature, including the native-trace equivalence tests.
 
 ## Global lookup cache
 
