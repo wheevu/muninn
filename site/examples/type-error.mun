@@ -1,0 +1,19 @@
+// This program does not compile, and that is the point of it.
+//
+// The second binding says an Int holds a String. Muninn's checker finds that
+// before the interpreter sees anything, so nothing below the error ran: no
+// print, no allocation, no instruction.
+//
+// Click the diagnostic to jump to the line, then change "hello" to 7 and run
+// it again.
+
+fn double(value: Int) -> Int {
+    return value * 2;
+}
+
+let count: Int = 7;
+let greeting: Int = "hello";
+
+print(double(count));
+print(greeting);
+double(count);

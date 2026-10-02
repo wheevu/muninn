@@ -1,0 +1,27 @@
+[package]
+name = "muninn-wasm"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The Muninn interpreter as a WebAssembly module, for the playground in site/"
+
+# A standalone workspace: the runner has no `main` and a panic handler, so it
+# cannot be a member of the native workspace it borrows `muninn` from.
+[workspace]
+
+[lib]
+# rlib as well so `cargo test` can exercise the writer on the host.
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+muninn = { path = ".." }
+
+[profile.release]
+# The page loads one module and runs untrusted-shaped programs in the
+# visitor's tab, so a panic must not unwind through JavaScript.
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

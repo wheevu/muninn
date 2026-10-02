@@ -1,0 +1,11 @@
+{
+  "name": "muninn-site",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "test:safari": "playwright test --project=safari"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

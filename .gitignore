@@ -1,3 +1,12 @@
-/target
+# Rust build output, at any depth. `/target` would miss wasm/target, which is
+# where the playground crate builds because it has its own manifest.
+target/
 .DS_Store
 DESIGN.md
+
+# A build product of the playground, not source.
+/site/muninn.wasm
+
+# Browser regression tests.
+/site/node_modules/
+/site/test-results/

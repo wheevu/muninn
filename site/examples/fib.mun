@@ -1,0 +1,15 @@
+// Recursion, so the call stack is worth looking at.
+//
+// Each call gets a frame with its own parameter. Step through this and watch
+// the frame list grow and unwind; the argument being passed sits on the stack
+// while the callee's local holds the same value.
+
+fn fib(n: Int) -> Int {
+    if (n < 2) {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+print(fib(10));
+fib(10);

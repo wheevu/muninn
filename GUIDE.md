@@ -23,6 +23,22 @@ cargo test --workspace
 
 ![Muninn compiler pipeline](docs/muninn-pipeline.svg)
 
+## The playground
+
+`site/` is a static page that runs Muninn in the browser by compiling the
+interpreter to WebAssembly. Build the module, then serve the folder:
+
+```bash
+./scripts/build_site_wasm.sh
+python3 -m http.server 8000 --directory site
+```
+
+Open <http://localhost:8000>. The page needs HTTP rather than a `file://`
+path, because it fetches the module and the example programs.
+
+The host policy, the disabled builtins, and the build are in
+[`site/README.md`](site/README.md).
+
 ## Features
 
 ### Language

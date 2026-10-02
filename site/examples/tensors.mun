@@ -1,0 +1,17 @@
+// Matrices are tensors, and a printed tensor is drawn as a grid on the page.
+//
+// tensor_fill(2, 2, 1.5) is a 2x2 matrix of 1.5. The two operands below are
+// the same shape, so the product is a 2x2; the bias is a 1x2 row added to
+// every row of the base matrix.
+
+let base: Tensor = tensor_fill(2, 2, 1.5);
+let bias: Tensor = tensor_fill(1, 2, 0.5);
+let weights: Tensor = tensor_fill(2, 2, 2.0);
+
+let biased: Tensor = base + bias;
+let product: Tensor = tensor_matmul(biased, weights);
+
+print(base);
+print(biased);
+print(product);
+print(tensor_sum(product));

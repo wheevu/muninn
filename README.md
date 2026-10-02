@@ -7,6 +7,14 @@ A small statically typed scripting language built in Rust.
 Muninn parses source, checks types, compiles bytecode, and runs it on a stack VM.
 The same program can run through the interpreter, bytecode path, hot-reload runtime, or the experimental integer tracing JIT.
 
+[Try a program in the browser](site/index.html): the playground runs this
+interpreter, compiled to WebAssembly, in your own tab, so the output and the
+diagnostics are the ones the command line produces.
+`./scripts/build_site_wasm.sh` builds it, and
+`python3 -m http.server --directory site` serves it.
+The Pages workflow publishes the same page to <https://wheevu.github.io/muninn/>
+on a push to `main`.
+
 ## Measured snapshot
 
 | Metric | Result |

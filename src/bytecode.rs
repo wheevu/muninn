@@ -194,7 +194,142 @@ impl Default for Chunk {
     }
 }
 
-#[derive(Debug, Clone)]
+/// How an opcode's operands are encoded, mirroring what `Vm` reads with
+/// `read_u8` and `read_u16` before it runs the instruction. The match has no
+/// wildcard arm on purpose: a new opcode does not compile until it says how
+/// it encodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operands {
+    None,
+    /// One u8, read after the opcode.
+    U8,
+    /// One little-endian u16, read after the opcode.
+    U16,
+    /// A little-endian u16 constant index holding a string name.
+    Name,
+}
+
+pub const fn operands_for(op: OpCode) -> Operands {
+    match op {
+        OpCode::Constant
+        | OpCode::GetLocal
+        | OpCode::SetLocal
+        | OpCode::BuildRecord
+        | OpCode::JumpIfFalse
+        | OpCode::Jump
+        | OpCode::Loop => Operands::U16,
+        OpCode::DefineGlobal | OpCode::GetGlobal | OpCode::SetGlobal | OpCode::GetField => {
+            Operands::Name
+        }
+        OpCode::Call => Operands::U8,
+        OpCode::Nil
+        | OpCode::True
+        | OpCode::False
+        | OpCode::Pop
+        | OpCode::Add
+        | OpCode::Subtract
+        | OpCode::Multiply
+        | OpCode::Divide
+        | OpCode::Negate
+        | OpCode::Not
+        | OpCode::Equal
+        | OpCode::Greater
+        | OpCode::Less
+        | OpCode::Return => Operands::None,
+    }
+}
+
+pub const fn opcode_name(op: OpCode) -> &'static str {
+    match op {
+        OpCode::Constant => "constant",
+        OpCode::Nil => "nil",
+        OpCode::True => "true",
+        OpCode::False => "false",
+        OpCode::Pop => "pop",
+        OpCode::GetLocal => "get_local",
+        OpCode::SetLocal => "set_local",
+        OpCode::DefineGlobal => "define_global",
+        OpCode::GetGlobal => "get_global",
+        OpCode::SetGlobal => "set_global",
+        OpCode::Add => "add",
+        OpCode::Subtract => "subtract",
+        OpCode::Multiply => "multiply",
+        OpCode::Divide => "divide",
+        OpCode::Negate => "negate",
+        OpCode::Not => "not",
+        OpCode::Equal => "equal",
+        OpCode::Greater => "greater",
+        OpCode::Less => "less",
+        OpCode::JumpIfFalse => "jump_if_false",
+        OpCode::Jump => "jump",
+        OpCode::Loop => "loop",
+        OpCode::Call => "call",
+        OpCode::Return => "return",
+        OpCode::BuildRecord => "build_record",
+        OpCode::GetField => "get_field",
+    }
+}
+
+/// One instruction as a listing or a debugger sees it: where it starts,
+/// what it is, the operand it carries, and the source span the VM would
+/// report an error against.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Instruction {
+    pub ip: usize,
+    pub op: OpCode,
+    pub name: &'static str,
+    /// The raw operand, before interpretation. A `Name` operand is a
+    /// constant index; `constant` carries what that constant says.
+    pub operand: Option<u16>,
+    pub constant: Option<Constant>,
+    pub span: Span,
+}
+
+/// Walks a chunk the way the VM walks it, one instruction at a time.
+///
+/// A chunk is a byte stream, so this needs the operand widths the VM uses.
+/// A trailing byte that is not a valid opcode ends the walk instead of
+/// panicking: a listing of a broken chunk is still worth printing.
+pub fn disassemble(chunk: &Chunk) -> Vec<Instruction> {
+    let mut instructions = Vec::new();
+    let mut ip = 0;
+    while let Some(&byte) = chunk.code.get(ip) {
+        let Some(op) = OpCode::from_byte(byte) else {
+            break;
+        };
+        let operand_start = ip + 1;
+        let operand = match operands_for(op) {
+            Operands::None => None,
+            Operands::U8 => chunk.code.get(operand_start).map(|&value| u16::from(value)),
+            Operands::U16 | Operands::Name => {
+                let low = chunk.code.get(operand_start);
+                let high = chunk.code.get(operand_start + 1);
+                match (low, high) {
+                    (Some(&low), Some(&high)) => Some(u16::from_le_bytes([low, high])),
+                    _ => None,
+                }
+            }
+        };
+        let width = match operands_for(op) {
+            Operands::None => 1,
+            Operands::U8 => 2,
+            Operands::U16 | Operands::Name => 3,
+        };
+        let constant = operand.and_then(|index| chunk.constants.get(index as usize).cloned());
+        instructions.push(Instruction {
+            ip,
+            op,
+            name: opcode_name(op),
+            operand,
+            constant,
+            span: chunk.span_at(ip),
+        });
+        ip += width;
+    }
+    instructions
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Constant {
     Int(i64),
     Float(f64),

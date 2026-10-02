@@ -1,0 +1,857 @@
+/* Muninn, a page about a small language.
+ *
+ * The page is paper with ink on it, one blue for anything the reader is meant
+ * to act on, and one red for anything that failed. There is no second accent
+ * and no colour that does not mean something: the tensor grid, the selected
+ * example, the current instruction, and a diagnostic are the only coloured
+ * things on the page, and each is a thing that happened.
+ */
+
+:root {
+  --paper: #f6f7f9;
+  --panel: #ffffff;
+  --panel-2: #eef1f5;
+  --ink: #0d1116;
+  --ink-2: #2a3138;
+  --muted: #525a63;
+  --subtle: #5d666e;
+  --rule: #d7dce2;
+  --rule-soft: #e6eaef;
+  --blue: #1b4f8f;
+  --blue-deep: #12386b;
+  --blue-wash: #e7eef8;
+  --red: #9f1d26;
+  --red-wash: #fbeceb;
+  --tok-num: #0e5a63;
+  --tok-str: #3d5a7a;
+  --tok-lit: #12386b;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+code,
+kbd,
+pre,
+.mono {
+  font-family: var(--mono);
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+a {
+  color: var(--blue);
+}
+
+.skip {
+  position: absolute;
+  left: -9999px;
+}
+
+.skip:focus {
+  left: 1rem;
+  top: 1rem;
+  background: var(--panel);
+  padding: 0.5rem 0.75rem;
+  z-index: 10;
+}
+
+:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+/* Masthead */
+
+.masthead {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 3.5rem 1.5rem 2rem;
+}
+
+.masthead h1 {
+  margin: 0;
+  font-size: 2.6rem;
+  font-weight: 620;
+  letter-spacing: -0.03em;
+}
+
+.tagline {
+  margin: 0.5rem 0 0;
+  max-width: 44rem;
+  font-size: 1.15rem;
+  color: var(--muted);
+}
+
+.provenance {
+  margin: 1rem 0 0;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--subtle);
+}
+
+.provenance.failed {
+  color: var(--red);
+}
+
+main {
+  max-width: 1420px;
+  margin: 0 auto;
+  padding: 0 1.5rem 4rem;
+}
+
+/* Workbench */
+
+.workbench {
+  display: grid;
+  grid-template-columns: 13rem minmax(0, 1fr) 24rem;
+  gap: 1.25rem;
+  align-items: start;
+}
+
+/* Every column starts with a card, so the three columns line up on one top
+   edge. The middle column is the card itself rather than containing one: a
+   toolbar sitting above its own card pushed that card below its neighbours,
+   which is what made the editor look lower than the two panels beside it. */
+.panel,
+.examples,
+.editor-column {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+}
+
+.panel {
+  padding: 1rem 1.1rem 1.1rem;
+  /* A grid item will not shrink below its content's min-content width unless
+     told to. Without this a wide tensor makes the Result panel itself wide,
+     and the page gains a horizontal scrollbar instead of the tensor. */
+  min-width: 0;
+}
+
+.panel h2,
+.examples h2 {
+  margin: 0 0 0.6rem;
+  font-size: 0.8rem;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--muted);
+}
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.panel-head h2 {
+  margin-bottom: 0.6rem;
+}
+
+/* Example list */
+
+.examples {
+  padding: 1rem 0.9rem 0.9rem;
+  position: sticky;
+  top: 1rem;
+}
+
+.examples ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.examples button {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--ink-2);
+  padding: 0.4rem 0.5rem;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.examples button:hover {
+  background: var(--blue-wash);
+}
+
+.examples button[aria-current="true"] {
+  background: var(--blue-wash);
+  color: var(--blue-deep);
+  font-weight: 600;
+}
+
+.examples-note {
+  margin: 0.8rem 0 0;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--rule-soft);
+  font-size: 0.8rem;
+  color: var(--subtle);
+}
+
+/* Editor */
+
+.editor-column {
+  display: grid;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* The toolbar is the card's header and the hint row is its footer, so the
+   Run button sits on the card's top edge, level with the panels beside it. */
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.bar-foot {
+  padding: 0.55rem 0.9rem;
+  border-top: 1px solid var(--rule-soft);
+  font-size: 0.8rem;
+  color: var(--subtle);
+}
+
+.bar-title {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  color: var(--ink-2);
+}
+
+.bar-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+button {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--panel);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--blue-deep);
+  color: #fff;
+}
+
+.live {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+
+.hint kbd {
+  border: 1px solid var(--rule);
+  border-bottom-width: 2px;
+  border-radius: 2px;
+  padding: 0 0.25rem;
+  font-size: 0.72rem;
+  background: var(--panel);
+}
+
+.editor {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  /* Both columns scroll within one viewport. An auto-sized row lets the
+     gutter grow to the entire program, so its scrollTop stays at zero. */
+  grid-template-rows: minmax(0, 1fr);
+  height: clamp(26rem, 58vh, 42rem);
+  overflow: hidden;
+}
+
+.gutter,
+#source,
+.highlight,
+.highlight .line {
+  font-family: var(--mono);
+  font-size: 13.5px;
+  line-height: 1.65;
+  tab-size: 4;
+}
+
+.gutter {
+  padding: 0.9rem 0.6rem 0.9rem 0.75rem;
+  text-align: right;
+  color: var(--subtle);
+  background: var(--panel-2);
+  border-right: 1px solid var(--rule-soft);
+  overflow: hidden;
+  user-select: none;
+  min-width: 2.4rem;
+}
+
+.gutter .marked {
+  color: var(--blue);
+  font-weight: 600;
+}
+
+.code {
+  position: relative;
+  min-height: 0;
+}
+
+/* Nothing here may restate the font. The rule above is the single source of
+   the family, size, and leading, because `font: inherit` on a textarea resets
+   to the body's 16px sans and the caret then sits between words instead of
+   on them. */
+.highlight,
+#source {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  border: 0;
+  tab-size: 4;
+}
+
+.highlight {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--ink);
+}
+
+/* One block per source line, so the line under the caret can be washed across
+   the whole editor. A single text run could only be washed behind the words,
+   which reads as a selection rather than as a line. */
+.highlight .line {
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+/* Use natural text line boxes, including on blank rows. Safari rounds those
+   differently from a fractional min-height, which made the code drift below
+   the native caret and line numbers, especially when zoomed out. */
+.highlight .line:empty::before {
+  content: "\200b";
+}
+
+/* Full-bleed wash: pull the line out by the editor's own padding and give
+   the padding back inside, so the wash reaches both edges without a shadow
+   or a clip path that would cut the text. */
+.highlight .line.current {
+  margin: 0 -1rem;
+  padding: 0 1rem;
+  background: var(--blue-wash);
+  box-shadow: -1rem 0 0 var(--blue-wash), 1rem 0 0 var(--blue-wash);
+}
+
+#source {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--blue);
+  overflow: auto;
+}
+
+#source::selection {
+  background: var(--blue-wash);
+}
+
+.highlight .kw {
+  color: var(--blue);
+  font-weight: 600;
+}
+
+.highlight .ty {
+  color: var(--blue-deep);
+  font-style: italic;
+}
+
+.highlight .num {
+  color: var(--tok-num);
+}
+
+.highlight .str {
+  color: var(--tok-str);
+}
+
+.highlight .lit {
+  color: var(--tok-lit);
+}
+
+/* Result */
+
+.result-column {
+  display: grid;
+  /* One column that may be narrower than its content, so the panels clamp to
+     the 24rem track instead of growing to fit a wide tensor. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  min-width: 0;
+}
+
+.diagnostics {
+  list-style: none;
+  margin: 0 0 0.6rem;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.diagnostics:empty {
+  display: none;
+}
+
+.diagnostics li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.45rem 0.6rem;
+  background: var(--red-wash);
+  border-left: 3px solid var(--red);
+  border-radius: 0 2px 2px 0;
+  font-size: 0.85rem;
+}
+
+.diagnostics .where {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--red);
+  cursor: pointer;
+  background: none;
+  border: 0;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.diagnostics .phase {
+  color: var(--subtle);
+}
+
+.output {
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink);
+  min-height: 3rem;
+}
+
+.output:empty::after {
+  content: "Nothing printed yet.";
+  color: var(--subtle);
+  font-family: var(--sans);
+  font-size: 0.85rem;
+}
+
+/* A program that never ran has no output, which is not the same as a program
+   that ran and printed nothing. */
+.output.unreached:empty::after {
+  content: "The program never ran, so it printed nothing.";
+}
+
+.value {
+  margin: 0.7rem 0 0;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--rule-soft);
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.value b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* A note under the output, for context that is not the output itself. The
+   error variant is a fault, so it is the one place outside diagnostics that
+   borrows the fault colour. */
+#output-note {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+#output-note.error {
+  color: var(--red);
+}
+
+/* The last run no longer matches the text in the editor. That is information,
+   not a fault, so it does not borrow the fault colour: crimson here means
+   something failed, and nothing has. */
+#stale {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: var(--blue-deep);
+}
+
+/* Tensor grid */
+
+/* A wide tensor scrolls inside its own box rather than pushing the page. The
+   Result column is 24rem and one cell is 3.6rem, so a tensor of more than a
+   handful of columns would otherwise escape the panel and give the whole page
+   a horizontal scrollbar. */
+.tensor-wrap {
+  display: inline-block;
+  vertical-align: top;
+  max-width: 100%;
+  margin: 0.2rem 0 0.6rem;
+}
+
+.tensor-shape {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--blue-deep);
+  background: var(--blue-wash);
+  border: 1px solid var(--rule);
+  border-bottom: 0;
+  border-radius: 2px 2px 0 0;
+  padding: 0.1rem 0.4rem;
+  display: inline-block;
+}
+
+.tensor {
+  display: inline-grid;
+  gap: 1px;
+  padding: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 0 0 2px 2px;
+  vertical-align: top;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.tensor span {
+  background: var(--panel);
+  padding: 0.15rem 0.5rem;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: right;
+  min-width: 3.6rem;
+}
+
+/* Execution */
+
+.next {
+  margin: 0 0 0.8rem;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--ink-2);
+  min-height: 1.4rem;
+}
+
+.next b {
+  color: var(--blue);
+  font-weight: 600;
+}
+
+.next .quiet {
+  color: var(--subtle);
+}
+
+.transport {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.transport button {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.78rem;
+}
+
+.inspector-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.9rem;
+  margin-bottom: 0.9rem;
+}
+
+.inspector-cell h3,
+.listing-wrap h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--muted);
+}
+
+.slots {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  display: grid;
+  gap: 0.1rem;
+  max-height: 8.5rem;
+  overflow: auto;
+}
+
+.slots li {
+  padding: 0.15rem 0.35rem;
+  border-radius: 2px;
+  background: var(--panel-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slots li:empty::after {
+  content: "empty";
+  color: var(--subtle);
+}
+
+.slots .fn {
+  color: var(--blue);
+  font-weight: 600;
+}
+
+.listing {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  max-height: 15rem;
+  overflow: auto;
+  border-top: 1px solid var(--rule-soft);
+}
+
+.listing li {
+  display: grid;
+  grid-template-columns: 2.6rem 1fr;
+  gap: 0.5rem;
+  padding: 0.1rem 0.35rem;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.listing .ip {
+  color: var(--subtle);
+  text-align: right;
+}
+
+.listing .op {
+  color: var(--ink-2);
+}
+
+.listing .arg {
+  color: var(--subtle);
+}
+
+.listing li.current {
+  background: var(--blue-wash);
+  color: var(--blue-deep);
+}
+
+.listing li.current .op,
+.listing li.current .ip {
+  color: var(--blue-deep);
+  font-weight: 600;
+}
+
+.listing li.past {
+  color: var(--subtle);
+}
+
+/* Notes and reference */
+
+.notes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 2rem;
+  margin-top: 3.5rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--rule);
+}
+
+.note h2,
+.reference h2 {
+  margin: 0 0 0.6rem;
+  font-size: 1.05rem;
+}
+
+.note p {
+  margin: 0 0 0.8rem;
+  font-size: 0.92rem;
+  color: var(--muted);
+}
+
+.note code,
+.reference code {
+  font-size: 0.85em;
+  background: var(--panel);
+  border: 1px solid var(--rule-soft);
+  border-radius: 2px;
+  padding: 0.05em 0.3em;
+}
+
+.reference {
+  margin-top: 3rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--rule);
+}
+
+.reference-note {
+  margin: 0 0 1rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+  max-width: 40rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+th {
+  font-size: 0.8rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+td:first-child {
+  font-family: var(--mono);
+  color: var(--ink);
+}
+
+td:nth-child(2) {
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+td:last-child {
+  color: var(--subtle);
+}
+
+td .yes {
+  color: var(--blue);
+}
+
+/* A builtin that traps here is a failure state, so it keeps the fault colour.
+   The cell's own words ("traps here") carry the meaning; the colour only
+   reinforces it. */
+td .no {
+  color: var(--red);
+}
+
+footer {
+  border-top: 1px solid var(--rule);
+  padding: 1.5rem;
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--subtle);
+}
+
+footer p {
+  max-width: 40rem;
+  margin: 0 auto;
+}
+
+/* Narrow */
+
+@media (max-width: 1080px) {
+  .workbench {
+    grid-template-columns: minmax(0, 1fr) 24rem;
+  }
+
+  .examples {
+    grid-column: 1 / -1;
+    position: static;
+  }
+
+  /* A picker that hides half its choices behind a horizontal scroll reads as
+     truncated rather than scrollable, and there are only seven. Wrapping
+     shows all of them at every narrow width. */
+  .examples ul {
+    grid-auto-flow: row;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 0.15rem 0.6rem;
+  }
+}
+
+@media (max-width: 780px) {
+  .workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .editor {
+    height: max(26rem, 40vh);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

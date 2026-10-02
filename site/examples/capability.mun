@@ -1,0 +1,13 @@
+// env_get is a real Muninn builtin, and this program is a real Muninn program.
+//
+// On the command line it prints your HOME. Here it traps: this page runs your
+// edits inside your browser, and a program in someone else's tab does not get
+// to read the environment of the machine that served the page.
+//
+// The message names the reason. Muninn's IO builtins are capability-gated:
+// the host grants them one at a time, and a builtin the host did not grant
+// fails loudly rather than quietly pretending.
+
+let name: String = env_get("HOME");
+print(name);
+name;

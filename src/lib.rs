@@ -21,8 +21,9 @@ pub mod vm;
 
 pub use autodiff::{AutodiffError, AutodiffErrorKind, Tape, TensorExpr, Variable, grad};
 pub use bytecode::{
-    BytecodeDecodeError, BytecodeModule, GlobalSpec, GlobalValueKind, MUBC_VERSION,
-    decode_bytecode_module, encode_bytecode_module,
+    BytecodeDecodeError, BytecodeModule, GlobalSpec, GlobalValueKind, Instruction, MUBC_VERSION,
+    Operands, decode_bytecode_module, disassemble, encode_bytecode_module, opcode_name,
+    operands_for,
 };
 pub use format::format_source;
 pub use frontend::{
@@ -33,9 +34,11 @@ pub use native::parse_exit_code;
 pub use tensor::Tensor;
 pub use typecheck::{SemanticModel, Symbol, SymbolKind, Ty};
 pub use value::Value;
-pub use vm::{HostPolicy, Vm};
+pub use vm::{CallFrame, HostPolicy, Vm};
 
 use std::path::Path;
+
+mod clock;
 
 use bytecode::{GlobalSpec as ModuleGlobalSpec, GlobalValueKind as ModuleGlobalValueKind};
 use compiler::compile_program;

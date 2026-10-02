@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Muninn</title>
+    <meta
+      name="description"
+      content="Muninn, a small statically typed scripting language. Edit a program and run it in this tab, on the real interpreter."
+    />
+    <link rel="stylesheet" href="./style.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%90%A6%EF%B8%8F%E2%80%8D%EF%B8%8F%E2%96%9B%3C/text%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <a class="skip" href="#workbench">Skip to the playground</a>
+
+    <header class="masthead">
+      <h1>Muninn</h1>
+      <p class="tagline">
+        A small statically typed scripting language. Change a program below and run it here, in this
+        tab, on the interpreter itself.
+      </p>
+      <p class="provenance" id="provenance">Loading the interpreter.</p>
+    </header>
+
+    <main>
+      <section class="workbench" id="workbench" aria-label="Playground">
+        <nav class="examples" aria-label="Example programs">
+          <h2>Programs</h2>
+          <ul id="example-list"></ul>
+          <p class="examples-note" id="example-note"></p>
+        </nav>
+
+        <div class="editor-column">
+          <div class="bar">
+            <span class="bar-title" id="example-title">Loading</span>
+            <div class="bar-actions">
+              <button type="button" id="run" class="primary">Run</button>
+              <button type="button" id="reset">Reset</button>
+            </div>
+          </div>
+          <div class="editor" id="editor">
+            <div class="gutter" id="gutter" aria-hidden="true"></div>
+            <div class="code">
+              <pre class="highlight" id="highlight" aria-hidden="true"></pre>
+              <textarea
+                id="source"
+                aria-label="Muninn program"
+                spellcheck="false"
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                wrap="off"
+              ></textarea>
+            </div>
+          </div>
+          <div class="bar bar-foot">
+            <label class="live"><input type="checkbox" id="live" /> Run as I type</label>
+            <span class="hint"><kbd>Ctrl</kbd>/<kbd>Cmd</kbd> + <kbd>Enter</kbd> runs</span>
+          </div>
+        </div>
+
+        <div class="result-column">
+          <section class="panel" aria-label="Result">
+            <h2>Result</h2>
+            <ol class="diagnostics" id="diagnostics" aria-live="polite"></ol>
+            <pre class="output" id="output" aria-live="polite"></pre>
+            <p class="notice" id="output-note" hidden></p>
+            <p class="value" id="value" hidden></p>
+            <p class="stale" id="stale" hidden></p>
+          </section>
+
+          <section class="panel inspector" aria-label="Execution">
+            <div class="panel-head">
+              <h2>Execution</h2>
+              <div class="transport">
+                <button type="button" id="inspect">Inspect</button>
+                <button type="button" id="step">Step</button>
+                <button type="button" id="finish">To the end</button>
+              </div>
+            </div>
+            <p class="next" id="next" aria-live="polite">Load a program to step through it.</p>
+            <div class="inspector-grid">
+              <div class="inspector-cell">
+                <h3>Operands</h3>
+                <ol class="slots" id="operands"></ol>
+              </div>
+              <div class="inspector-cell">
+                <h3>Frames</h3>
+                <ol class="slots" id="frames"></ol>
+              </div>
+            </div>
+            <div class="listing-wrap">
+              <h3 id="listing-title">Bytecode</h3>
+              <ol class="listing" id="listing"></ol>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="notes">
+        <div class="note">
+          <h2>What this page is</h2>
+          <p>
+            The editor runs Muninn. Not a recording of Muninn, and not a JavaScript imitation of it: the
+            interpreter in <code>src/</code> is compiled to WebAssembly and executes in this tab, so the
+            output, the diagnostics, and the bytecode below are the ones the command line produces. The
+            page draws them and holds no model of the language.
+          </p>
+          <p>
+            Edits are yours while you type, and nothing leaves the tab. The page is static: there is no
+            server behind it, and there is no account, no history, and no stored program.
+          </p>
+        </div>
+        <div class="note">
+          <h2>What this host allows</h2>
+          <p>
+            A script on a web page runs inside someone else's browser, so this host grants a smaller set
+            of capabilities than the command line does. Muninn's builtins reach the host process for
+            arguments, environment variables, files, the clock, and stdin; the table below says which
+            ones this page lets through. The ones it does not trap with a policy error rather than
+            failing quietly, and that trap is the program below the table.
+          </p>
+          <p id="budget"></p>
+        </div>
+        <div class="note">
+          <h2>Tensors</h2>
+          <p>
+            Muninn has a tensor type with broadcasting, matrix multiplication, and reductions. A printed
+            tensor is drawn as a grid, because the shape is the point: <code>tensor(shape=[2, 2], ...)</code>
+            is a two-by-two matrix, not four loose numbers.
+          </p>
+        </div>
+      </section>
+
+      <section class="reference">
+        <h2>Builtins</h2>
+        <p class="reference-note">
+          Generated from the running interpreter's own table, so this list cannot drift from what the
+          language actually has.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">Signature</th>
+              <th scope="col">In this page</th>
+            </tr>
+          </thead>
+          <tbody id="native-table"></tbody>
+        </table>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        Muninn is a learning project. The interpreter, the compiler, the runtime checks, and this page
+        are in one repository; the README explains the pipeline and the decisions behind it.
+      </p>
+    </footer>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

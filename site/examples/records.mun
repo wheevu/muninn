@@ -1,0 +1,29 @@
+// A record is a named shape: every field is declared once, at the top.
+//
+// Fields are read, not assigned. Moving a point means returning a new one,
+// so `moved` below is a value rather than a thing that was edited.
+
+record Point { x: Int, y: Int }
+
+fn origin() -> Point {
+    return Point { x: 0, y: 0 };
+}
+
+fn translate(point: Point, dx: Int, dy: Int) -> Point {
+    return Point { x: point.x + dx, y: point.y + dy };
+}
+
+fn length_squared(point: Point) -> Int {
+    return point.x * point.x + point.y * point.y;
+}
+
+let start: Point = origin();
+let moved: Point = translate(start, 3, 4);
+
+assert(moved.x == 3);
+assert(moved.y == 4);
+assert(length_squared(moved) == 25);
+
+print(start);
+print(moved);
+print(length_squared(moved));

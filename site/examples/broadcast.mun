@@ -1,0 +1,14 @@
+// Broadcasting: a size-one dimension stretches to meet the other operand.
+//
+// The row below is [1, 2] and the matrix is [2, 2], so the row is added to
+// both of the matrix's rows. Change tensor_fill(1, 2, 10.0) to
+// tensor_fill(1, 3, 10.0) and run it: 3 against 2 leaves no size-one side
+// to stretch, so the run fails with a shape mismatch instead of guessing.
+
+let row: Tensor = tensor_fill(1, 2, 10.0);
+let matrix: Tensor = tensor_fill(2, 2, 1.0);
+
+print(matrix);
+print(row);
+print(matrix + row);
+print(tensor_sum(matrix + row));

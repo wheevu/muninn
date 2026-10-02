@@ -1,0 +1,27 @@
+// Euclid's algorithm, written out longhand.
+//
+// Muninn has no remainder operator, so the loop subtracts a multiple of the
+// smaller number instead. Step into gcd and watch x and y trade places.
+
+fn abs_int(value: Int) -> Int {
+    if (value < 0) {
+        return -value;
+    }
+    return value;
+}
+
+fn gcd(a: Int, b: Int) -> Int {
+    let mut x: Int = abs_int(a);
+    let mut y: Int = abs_int(b);
+    while (y != 0) {
+        let quotient: Int = x / y;
+        let remainder: Int = x - quotient * y;
+        x = y;
+        y = remainder;
+    }
+    return x;
+}
+
+print(gcd(84, 30));
+print(gcd(17, 5));
+gcd(1071, 462);

@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -85,6 +86,154 @@ pub struct HostCaps<'a> {
     /// builtin under `root`; absolute paths and escapes trap.
     pub fs_root: &'a Option<PathBuf>,
     pub stdin_data: &'a str,
+    /// Destinations for `print` and `eprint`, borrowed from the VM so a
+    /// capturing host sees every line in order.
+    pub out: &'a Output,
+    pub err: &'a Output,
+}
+
+/// One buffered line sink: the text held back, the byte budget it may hold,
+/// how many whole lines did not fit, and which buffered lines printed a
+/// tensor value rather than text that happens to read like one.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Capture {
+    pub text: String,
+    pub limit: usize,
+    pub dropped_lines: usize,
+    pub line_is_tensor: Vec<bool>,
+}
+
+/// Where a print native writes. `Inherit` is the process stream, which is
+/// what a CLI wants and what the language was built around. `Buffer` is for
+/// hosts that have no streams to inherit, such as a WebAssembly page: the
+/// same text is held in memory for the host to read back. The buffer is a
+/// `RefCell` because the capability view the native sees is a shared
+/// reference, exactly like every other field in it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Output {
+    #[default]
+    Inherit,
+    Buffer(RefCell<Capture>),
+}
+
+/// What one drain of a capture held: the kept text, how many lines did not
+/// fit, and the 1-based line numbers (within this text) whose printed value
+/// was a tensor.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Captured {
+    pub text: String,
+    pub dropped_lines: usize,
+    pub tensor_lines: Vec<u32>,
+}
+
+/// The two process streams a print native can reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stream {
+    Stdout,
+    Stderr,
+}
+
+impl Output {
+    /// A fresh empty capture, the destination a host installs when the
+    /// process streams are not available to it. Unbounded: every line fits.
+    pub fn capture() -> Self {
+        Self::capture_bounded(usize::MAX)
+    }
+
+    /// A fresh empty capture that keeps whole lines up to `limit` bytes.
+    /// A line that would push the text past the limit is dropped whole,
+    /// never kept half-written, and counted in `dropped_lines`.
+    pub fn capture_bounded(limit: usize) -> Self {
+        Self::Buffer(RefCell::new(Capture {
+            text: String::new(),
+            limit,
+            dropped_lines: 0,
+            line_is_tensor: Vec::new(),
+        }))
+    }
+
+    /// Takes everything written so far, leaving the capture empty. An
+    /// inherited destination yields nothing: no text was ever held back.
+    pub fn take(&self) -> Captured {
+        match self {
+            Self::Inherit => Captured {
+                text: String::new(),
+                dropped_lines: 0,
+                tensor_lines: Vec::new(),
+            },
+            Self::Buffer(capture) => {
+                let mut capture = capture.borrow_mut();
+                let text = std::mem::take(&mut capture.text);
+                let dropped_lines = std::mem::take(&mut capture.dropped_lines);
+                let line_is_tensor = std::mem::take(&mut capture.line_is_tensor);
+                let mut tensor_lines = Vec::new();
+                for (index, is_tensor) in line_is_tensor.iter().enumerate() {
+                    if *is_tensor {
+                        tensor_lines.push(index as u32 + 1);
+                    }
+                }
+                Captured {
+                    text,
+                    dropped_lines,
+                    tensor_lines,
+                }
+            }
+        }
+    }
+
+    /// Writes one line, newline included, the way `println!` would. A
+    /// buffered line is recorded as not-a-tensor; the caller that knows the
+    /// printed value was a tensor marks it afterwards.
+    pub fn write_line(&self, text: &str, stream: Stream) {
+        match self {
+            Self::Inherit => match stream {
+                Stream::Stdout => println!("{text}"),
+                Stream::Stderr => eprintln!("{text}"),
+            },
+            Self::Buffer(capture) => {
+                let mut capture = capture.borrow_mut();
+                if capture
+                    .text
+                    .len()
+                    .saturating_add(text.len().saturating_add(1))
+                    > capture.limit
+                {
+                    capture.dropped_lines += 1;
+                    return;
+                }
+                capture.text.push_str(text);
+                capture.text.push('\n');
+                capture.line_is_tensor.push(false);
+            }
+        }
+    }
+
+    /// Marks the buffered line just written as a tensor value. A line that
+    /// did not fit leaves no entry behind, so there is nothing to mark.
+    fn mark_last_line_tensor(&self) {
+        if let Self::Buffer(capture) = self
+            && let Some(last) = capture.borrow_mut().line_is_tensor.last_mut()
+        {
+            *last = true;
+        }
+    }
+}
+
+impl HostCaps<'_> {
+    /// One `print` line, to the destination this host chose. `is_tensor`
+    /// records whether the printed value was a tensor, so a host never has
+    /// to guess from the text.
+    pub fn print(&self, text: &str, is_tensor: bool) {
+        self.out.write_line(text, Stream::Stdout);
+        if is_tensor {
+            self.out.mark_last_line_tensor();
+        }
+    }
+
+    /// One `eprint` line, to the destination this host chose.
+    pub fn eprint(&self, text: &str) {
+        self.err.write_line(text, Stream::Stderr);
+    }
 }
 
 impl<'a> NativeCallContext<'a> {
@@ -479,11 +628,14 @@ pub fn invoke_native(kind: NativeFunctionKind, args: &[Value], span: Span) -> Vm
     let empty_argv: &[String] = &[];
     let deny_env: Option<HashSet<String>> = Some(HashSet::new());
     let no_root: Option<PathBuf> = None;
+    let no_output = Output::Inherit;
     let caps = HostCaps {
         argv: empty_argv,
         allowed_env: &deny_env,
         fs_root: &no_root,
         stdin_data: "",
+        out: &no_output,
+        err: &no_output,
     };
     invoke_native_with_limit(kind, args, span, BUILTIN_MAX_ELEMENTS, &caps)
 }
@@ -567,7 +719,10 @@ fn native_print(ctx: NativeCallContext<'_>) -> VmResult<Value> {
     if ctx.args().len() != 1 {
         return Err(vm_error("print expects exactly 1 argument", ctx.span()));
     }
-    println!("{}", ctx.args()[0]);
+    ctx.host().print(
+        &ctx.args()[0].stringify(),
+        matches!(ctx.args()[0], Value::Tensor(_)),
+    );
     Ok(Value::Nil)
 }
 
@@ -901,7 +1056,7 @@ fn native_eprint(ctx: NativeCallContext<'_>) -> VmResult<Value> {
     if ctx.args().len() != 1 {
         return Err(vm_error("eprint expects exactly 1 argument", ctx.span()));
     }
-    eprintln!("{}", ctx.args()[0]);
+    ctx.host().eprint(&ctx.args()[0].stringify());
     Ok(Value::Nil)
 }
 

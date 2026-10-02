@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::bytecode::{BytecodeModule, Chunk, Constant, GlobalValueKind, OpCode, validate_module};
+use crate::clock::Clock;
 use crate::error::MuninnError;
 use crate::jit::{JitBackend, TraceEngine, TraceKey, TraceOutcome, TraceStats};
 use crate::native::{
-    HostCaps, NativeFunctionKind, add_values, divide_values, invoke_native_with_limit,
-    multiply_values, native_name, registered_natives, subtract_values,
+    Captured, HostCaps, NativeFunctionKind, Output, add_values, divide_values,
+    invoke_native_with_limit, multiply_values, native_name, registered_natives, subtract_values,
 };
 use crate::runtime::{VmResult, vm_error};
 use crate::span::Span;
@@ -25,13 +26,18 @@ pub struct Vm {
     globals: HashMap<String, Value>,
     policy: HostPolicy,
     steps_used: u64,
-    started_at: Instant,
+    started_at: Clock,
     ops_since_clock_check: u32,
     global_cache: HashMap<String, CachedGlobal>,
     global_cache_stats: GlobalCacheStats,
     globals_epoch: u64,
     stack: Vec<Value>,
     frames: Vec<CallFrame>,
+    /// Where `print` and `eprint` go. Owned by the VM because a host that
+    /// cannot inherit the process streams (a WebAssembly page) captures the
+    /// text here instead.
+    stdout: Output,
+    stderr: Output,
     started: bool,
     pending_reload: Option<BytecodeModule>,
     preserve_existing_globals: bool,
@@ -187,12 +193,14 @@ impl HostPolicy {
     /// Builds the per-call capability view for native dispatch. The VM
     /// stays the isolation boundary: one `Vm` per guest, budgets and
     /// capabilities never shared across VMs.
-    fn host_caps(&self) -> HostCaps<'_> {
+    fn host_caps<'a>(&'a self, out: &'a Output, err: &'a Output) -> HostCaps<'a> {
         HostCaps {
             argv: &self.argv,
             allowed_env: &self.allowed_env,
             fs_root: &self.fs_root,
             stdin_data: &self.stdin_data,
+            out,
+            err,
         }
     }
 }
@@ -238,11 +246,14 @@ struct CachedGlobal {
     epoch: u64,
 }
 
+/// A read-only view of one call frame, for embedders and debuggers. The
+/// fields are the VM's own bookkeeping: `stack_base` is where the frame's
+/// locals start in [`Vm::value_stack`].
 #[derive(Debug, Clone, Copy)]
-struct CallFrame {
-    function_id: usize,
-    ip: usize,
-    stack_base: usize,
+pub struct CallFrame {
+    pub function_id: usize,
+    pub ip: usize,
+    pub stack_base: usize,
 }
 
 impl Vm {
@@ -282,8 +293,10 @@ impl Vm {
             aborted: None,
             module,
             steps_used: 0,
-            started_at: Instant::now(),
+            started_at: Clock::now(),
             ops_since_clock_check: 0,
+            stdout: Output::Inherit,
+            stderr: Output::Inherit,
         };
         vm.install_natives();
         vm.reserve_runtime_capacity(
@@ -398,6 +411,62 @@ impl Vm {
         self.globals.get(name)
     }
 
+    /// The live value stack, bottom first. Each frame owns one region: its
+    /// locals at `stack_base`, then the operands pushed since. A debugger
+    /// reads this; the language never does.
+    pub fn value_stack(&self) -> &[Value] {
+        &self.stack
+    }
+
+    /// The live call frames, outermost first. Empty before the first
+    /// instruction and after the program returns.
+    pub fn frames(&self) -> &[CallFrame] {
+        &self.frames
+    }
+
+    /// One frame's locals in slot order, or an empty slice for a frame index
+    /// that does not exist. Slots the compiler reserved but the program has
+    /// not written read back as `nil`.
+    pub fn frame_locals(&self, frame_index: usize) -> &[Value] {
+        let Some(frame) = self.frames.get(frame_index) else {
+            return &[];
+        };
+        let Some(function) = self.module.functions.get(frame.function_id) else {
+            return &[];
+        };
+        self.stack
+            .get(frame.stack_base..frame.stack_base + function.local_count)
+            .unwrap_or(&[])
+    }
+
+    /// Sends `print` and `eprint` into memory instead of the process
+    /// streams. Hosts that have no streams to inherit call this before
+    /// running; [`Vm::take_output`] then reads the text back in the order it
+    /// was written. Only the inherited destinations are replaced, so a host
+    /// that supplied its own buffer keeps it.
+    pub fn capture_output(&mut self) {
+        self.capture_output_bounded(usize::MAX);
+    }
+
+    /// Sends `print` and `eprint` into a bounded memory capture: a line that
+    /// would push the kept text past `limit` bytes is dropped whole and
+    /// counted, never kept half-written.
+    pub fn capture_output_bounded(&mut self, limit: usize) {
+        if self.stdout == Output::Inherit {
+            self.stdout = Output::capture_bounded(limit);
+        }
+        if self.stderr == Output::Inherit {
+            self.stderr = Output::capture_bounded(limit);
+        }
+    }
+
+    /// Takes everything captured so far, leaving the captures empty and
+    /// still capturing. Inherited streams yield empty captures: nothing was
+    /// ever held back for the host.
+    pub fn take_output(&mut self) -> (Captured, Captured) {
+        (self.stdout.take(), self.stderr.take())
+    }
+
     fn install_natives(&mut self) {
         for native in registered_natives() {
             self.globals
@@ -412,7 +481,7 @@ impl Vm {
         self.stack.clear();
         self.frames.clear();
         self.steps_used = 0;
-        self.started_at = Instant::now();
+        self.started_at = Clock::now();
         self.ops_since_clock_check = 0;
         self.push_frame(self.module.entry_function, 0, span)?;
         self.started = true;
@@ -843,7 +912,7 @@ impl Vm {
                     ));
                 }
                 let max_elements = self.policy.max_tensor_elements;
-                let caps = self.policy.host_caps();
+                let caps = self.policy.host_caps(&self.stdout, &self.stderr);
                 let result = invoke_native_with_limit(
                     kind,
                     &self.stack[callee_index + 1..],

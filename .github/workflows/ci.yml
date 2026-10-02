@@ -30,6 +30,43 @@ jobs:
       - name: Cargo test
         run: cargo test --workspace --all-features
 
+  playground:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            wasm -> wasm/target
+
+      # The playground's runner is a separate crate with no `main`, so the
+      # workspace jobs above do not touch it.
+      - name: Cargo fmt
+        run: cargo fmt --manifest-path wasm/Cargo.toml --check
+
+      - name: Cargo clippy
+        run: cargo clippy --manifest-path wasm/Cargo.toml --all-targets -- -D warnings
+
+      - name: Cargo test
+        run: cargo test --manifest-path wasm/Cargo.toml
+
+      - name: Build the interpreter for the page
+        run: ./scripts/build_site_wasm.sh
+
+      # Runs the built module the way the page's worker does, so a change to
+      # the protocol fails here rather than in a browser console.
+      - name: Run the interpreter's own probe
+        run: node wasm/probe.cjs site/muninn.wasm
+
   vscode-extension:
     runs-on: ubuntu-latest
     steps:
