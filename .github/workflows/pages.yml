@@ -65,16 +65,20 @@ jobs:
       - name: Check the artifact
         run: |
           set -euo pipefail
-          test -s site/muninn.wasm
-          test -s site/index.html
-          test -s site/app.js
-          test -s site/worker.js
-          test -s site/style.css
-          test -s site/examples/index.json
-          for program in euclid records tensors broadcast type-error capability fib; do
-            test -s "site/examples/$program.mun"
+          for file in site/muninn.wasm site/index.html site/app.js \
+            site/worker.js site/style.css site/examples/index.json; do
+            test -s "$file" || { echo "missing or empty: $file"; exit 1; }
           done
-          head -c 4 site/muninn.wasm | od -An -c | grep -q '0   0   0   a   s   m'
+          for program in euclid records tensors broadcast type-error capability fib; do
+            test -s "site/examples/$program.mun" ||
+              { echo "missing or empty: site/examples/$program.mun"; exit 1; }
+          done
+          # Read the WebAssembly magic as hex rather than through `od -c`:
+          # GNU od prints \0 where BSD od prints 0, so a character-based match
+          # reports a good module as broken on the other platform.
+          magic=$(head -c 4 site/muninn.wasm | od -An -t x1 | tr -d ' \n')
+          test "$magic" = "0061736d" ||
+            { echo "not a WebAssembly module: magic=$magic"; exit 1; }
 
       # The module is the interpreter, so the same answers the page will draw
       # are checked before it is published: a program runs, one steps, a type
@@ -85,12 +89,19 @@ jobs:
       - name: Stage the page
         run: |
           set -euo pipefail
-          mkdir -p _site
-          cp -R site/. _site/
-          # Not site content: the probe is a test, and the Markdown README is
-          # not a page. No -f, so renaming one of them fails the deploy rather
-          # than quietly publishing a test to a public URL.
-          rm _site/README.md
+          # An allowlist rather than copying `site/` and deleting afterwards.
+          # The published folder is the page and nothing else; a copy would
+          # also publish the browser tests, the npm manifest and the Markdown
+          # README to a public URL, and any new test file would leak by default.
+          mkdir -p _site/examples
+          cp site/index.html site/app.js site/worker.js site/style.css \
+            site/muninn.wasm _site/
+          cp site/examples/index.json "site/examples/"*.mun _site/examples/
+          for stray in README.md tests package.json package-lock.json \
+            playwright.config.cjs node_modules test-results; do
+            test ! -e "_site/$stray" ||
+              { echo "staged something that is not page content: $stray"; exit 1; }
+          done
           test -f _site/index.html
           test -f _site/muninn.wasm
 
